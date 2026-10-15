@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'none'; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Hidden Pattern Finder</title>
+<meta name="description" content="Drop a picture and look for repeating patterns hidden under it. Runs entirely in your browser: nothing is uploaded.">
+<meta name="theme-color" content="#070505">
+<link rel="icon" href="/assets/favicon.ico" sizes="any">
+<style>
+/* the Wall's tokens (Websites/kurtholes.com/site/index.html): black + red, his palette. NO web fonts (Oct 14 2026, wave 4):
+   this page promises "nothing leaves your device", so it makes no request at all after it loads; the Wall's faces are
+   named first and used only when installed locally, the system stacks behind them carry the look otherwise. */
+:root{
+  --ink:#070505; --tile:#150e0e; --signal:#d7141e; --blood:#5a0b10; --ember:#ff5a4e;
+  --bone:#f3ece6; --ash:#a1938d; --onred:#0a0707; --white:#ffffff; --gold:#ffd200; --steel:#3c8cff;
+  --gut:16px; --gap:6px;
+  --display:"Big Shoulders Display","Oswald","Arial Narrow","Roboto Condensed",Impact,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+  --serif:"Instrument Serif",Georgia,"Times New Roman",serif;
+  --grain:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .7 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>");
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--ink);-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ink);color:var(--bone);font-family:var(--mono);font-size:15px;line-height:1.5;overflow-x:hidden}
+::selection{background:var(--signal);color:var(--white)}
+a{color:var(--ember)}
+a:focus-visible,button:focus-visible,select:focus-visible,label:focus-within{outline:3px solid var(--bone);outline-offset:3px}
+h1,h2,h3,p{margin:0}
+.wrap{width:min(100% - 2*var(--gut), 1400px);margin:0 auto}
+.red{position:relative;background:var(--signal);color:var(--onred)}
+.red::before{content:"";position:absolute;inset:0;background:var(--grain);opacity:.28;mix-blend-mode:multiply;pointer-events:none}
+.draft{display:inline-block;font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:5px 7px;border:1px dashed currentColor;vertical-align:middle}
+
+/* ---------- the head: his red field ---------- */
+.head{margin-top:var(--gut);padding:18px 18px 16px;display:grid;gap:14px}
+.head .top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;position:relative;font:500 12px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.head .top a{color:var(--white);text-decoration:none}
+.head .top a:hover{text-decoration:underline}
+.head h1{position:relative;font:900 clamp(52px,15vw,150px)/.84 var(--display);text-transform:uppercase;letter-spacing:-.01em}
+.head h1 span{display:block}
+.head .sub{position:relative;font:400 14px/1.4 var(--mono);color:var(--white);max-width:60ch}
+
+/* ---------- controls ---------- */
+.panel{margin-top:var(--gap);background:var(--tile);padding:16px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tabs button,.btn{font:900 18px/1 var(--display);text-transform:uppercase;letter-spacing:.04em;min-height:44px;padding:0 18px;background:var(--ink);color:var(--bone);border:2px solid var(--blood);border-radius:0;cursor:pointer}
+.tabs button[aria-selected="true"],.btn.go{background:var(--signal);color:var(--white);border-color:var(--signal)}
+.tabs button:hover,.btn:hover{border-color:var(--signal)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.drop{display:grid;place-items:center;text-align:center;gap:10px;min-height:200px;padding:22px 14px;border:2px dashed var(--ash);background:#0d0909;cursor:pointer;transition:border-color .18s,background-color .18s}
+.drop:hover,.drop.over{border-color:var(--signal);background:#1a0c0c}
+.drop .big{font:900 clamp(30px,8vw,60px)/.9 var(--display);text-transform:uppercase}
+.drop .small{font:400 13px/1.4 var(--mono);color:var(--ash);max-width:56ch}
+.drop input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.opts{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-top:12px;font-size:13px;color:var(--ash)}
+.opts select{font:400 14px/1.2 var(--mono);background:var(--ink);color:var(--bone);border:2px solid var(--blood);padding:8px 10px;border-radius:0;min-height:40px}
+.status{margin-top:12px;font-size:13px;color:var(--ash);min-height:1.5em}
+.bar{height:6px;background:#2a1414;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--signal);transition:width .2s}
+.err{color:var(--ember)}
+.src{display:flex;gap:14px;align-items:flex-start;margin-top:12px;flex-wrap:wrap}
+.src canvas{max-width:160px;max-height:160px;background:#000}
+.src p{font-size:13px;color:var(--ash)}
+
+/* ---------- verdict ---------- */
+.verdict{margin-top:var(--gap);padding:18px;display:grid;gap:10px}
+.verdict.black{background:var(--tile);color:var(--bone)}
+.verdict .kick{position:relative;font:500 12px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase}
+.verdict .word{position:relative;font:900 clamp(40px,11vw,104px)/.86 var(--display);text-transform:uppercase}
+.verdict .say{position:relative;font:400 15px/1.45 var(--mono);max-width:72ch}
+.verdict.red .say,.verdict.red .kick,.verdict.red .nums{color:var(--white)}
+.verdict .nums{position:relative;font:400 12px/1.5 var(--mono);color:var(--ash);overflow-wrap:anywhere}
+
+/* ---------- the grid of transforms ---------- */
+.gridhead{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap;margin:22px 0 10px}
+.gridhead h2{font:900 clamp(28px,7vw,48px)/.9 var(--display);text-transform:uppercase}
+.gridhead p{font-size:12px;color:var(--ash);max-width:60ch}
+.toggle{display:flex;gap:6px}
+.toggle button{font:500 12px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;min-height:40px;padding:0 12px;background:var(--ink);color:var(--bone);border:2px solid var(--blood);border-radius:0;cursor:pointer}
+.toggle button[aria-pressed="true"]{background:var(--bone);color:var(--onred);border-color:var(--bone)}
+.grid{display:grid;gap:var(--gap);grid-template-columns:repeat(2,minmax(0,1fr))}
+.cell{position:relative;background:var(--tile);border:0;padding:0;color:var(--bone);text-align:left;cursor:pointer;display:flex;flex-direction:column;min-width:0;font:inherit}
+.cell .pic{position:relative;aspect-ratio:1;background:#000;display:grid;place-items:center;overflow:hidden}
+.cell canvas{max-width:100%;max-height:100%;display:block;image-rendering:auto}
+.cell .lab{padding:8px 10px 10px;display:grid;gap:4px}
+.cell .no{font:500 11px/1 var(--mono);color:var(--ember);letter-spacing:.06em}
+.cell .t{font:700 18px/1 var(--display);text-transform:uppercase;letter-spacing:.02em;overflow-wrap:anywhere}
+.cell .s{font:400 11px/1.3 var(--mono);color:var(--ash)}
+.cell .meter{height:4px;background:#2a1414}
+.cell .meter i{display:block;height:100%;background:var(--ash)}
+.cell.hot .meter i{background:var(--signal)}
+.cell.hot{box-shadow:inset 0 0 0 3px var(--signal)}
+.cell .badge{position:absolute;top:8px;left:8px;font:500 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:5px 6px;background:var(--signal);color:var(--white)}
+.cell .badge.lat{background:var(--steel)}
+.cell:hover .t,.cell:focus-visible .t{color:var(--ember)}
+.extras{margin-top:22px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:var(--ash);margin-top:10px}
+.legend b{display:inline-block;width:12px;height:12px;vertical-align:-2px;margin-right:6px;border:2px solid currentColor;border-radius:50%}
+
+/* ---------- multi ---------- */
+.mtable{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+.mtable th,.mtable td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a1414}
+.mtable th{color:var(--ash);font-weight:500}
+.scroll{overflow-x:auto}
+.cohpic{margin-top:12px;max-width:min(100%,720px);display:block;background:#000}
+.list{font-size:13px;color:var(--ash);margin-top:8px;max-height:160px;overflow:auto}
+
+/* ---------- explainer ---------- */
+.explain{margin-top:var(--gap);display:grid;gap:var(--gap);grid-template-columns:1fr}
+.explain section{background:var(--tile);padding:18px}
+.explain h3{font:900 26px/1 var(--display);text-transform:uppercase;margin-bottom:10px;color:var(--bone)}
+.explain p{font-size:14px;color:var(--bone);margin-bottom:10px;max-width:68ch}
+.explain p.q{color:var(--ash);font-size:13px}
+.explain ul{margin:0 0 10px;padding-left:18px;font-size:14px;max-width:68ch}
+.explain li{margin-bottom:6px}
+
+.foot{margin:var(--gap) 0 0;padding:18px 0 24px}
+.foot .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px 20px;font:400 12px/1.4 var(--mono);color:var(--white);position:relative}
+.foot a{color:var(--white)}
+
+/* ---------- the enlarged view ---------- */
+dialog{width:min(100% - 2*var(--gut), 1400px);max-height:calc(100% - 2*var(--gut));padding:0;border:0;background:var(--ink);color:var(--bone)}
+dialog::backdrop{background:rgba(7,5,5,.88)}
+.dlg{padding:16px;display:grid;gap:12px}
+.dlg header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.dlg h3{font:900 clamp(28px,6vw,52px)/.9 var(--display);text-transform:uppercase}
+.dlg .why{font-size:13px;color:var(--ash);max-width:80ch}
+.dlg .views{display:grid;gap:var(--gap);grid-template-columns:1fr}
+.dlg figure{margin:0;background:var(--tile);padding:8px}
+.dlg figure .stage{position:relative;display:grid;place-items:center;background:#000}
+.dlg figure canvas{max-width:100%;height:auto;display:block}
+.dlg figcaption{font-size:12px;color:var(--ash);padding-top:6px}
+.close{font:900 20px/1 var(--display);text-transform:uppercase;min-height:44px;padding:0 16px;background:var(--signal);color:var(--white);border:0;cursor:pointer}
+
+@media (min-width:820px){
+  :root{--gut:24px;--gap:10px}
+  .head{padding:26px 30px 24px}
+  .panel{padding:22px 24px}
+  .verdict{padding:24px 30px}
+  .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .explain{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .dlg .views{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .dlg{padding:22px}
+}
+@media (min-width:1200px){ .grid{grid-template-columns:repeat(6,minmax(0,1fr))} }
+@media (prefers-reduced-motion:reduce){ *,*::before,*::after{transition:none!important;animation:none!important} }
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+
+<header class="wrap head red">
+  <p class="top"><a href="/">kurtholes.com</a><span class="draft">DRAFT COPY</span></p>
+  <h1><span>Hidden</span> <span>Pattern</span> <span>Finder</span></h1>
+  <!-- DRAFT COPY: Kurt's voice pass comes later via /kurt-voice -->
+  <p class="sub">Drop a picture. It gets pulled apart 69 ways and every version is checked for a repeating pattern hiding under the content. It all runs on your device. Nothing is uploaded.</p>
+</header>
+
+<main class="wrap">
+
+  <section class="panel" aria-label="Choose images">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-one" aria-selected="true" aria-controls="one">One image</button>
+      <button type="button" role="tab" id="tab-many" aria-selected="false" aria-controls="many">Many images</button>
+    </div>
+
+    <div id="one" role="tabpanel" aria-labelledby="tab-one">
+      <label class="drop" id="drop1">
+        <input type="file" id="file1" accept="image/*">
+        <span class="big">Drop an image</span>
+        <!-- DRAFT COPY -->
+        <span class="small">or tap to choose one. PNG is best: a JPEG's own compression grid is labelled, never counted, but it blurs fine detail.</span>
+      </label>
+      <div class="opts">
+        <label>Analysis size
+          <select id="cap">
+            <option value="1024">1024 px (quick)</option>
+            <option value="2048" selected>2048 px (default)</option>
+            <option value="4096">4096 px (slow, uses a lot of memory)</option>
+          </select>
+        </label>
+        <span id="cores"></span>
+      </div>
+    </div>
+
+    <div id="many" role="tabpanel" aria-labelledby="tab-many" hidden>
+      <label class="drop" id="drop2">
+        <input type="file" id="file2" accept="image/*" multiple>
+        <span class="big">Drop a set</span>
+        <!-- DRAFT COPY -->
+        <span class="small">Many pictures from ONE source, all the same size (same model, same camera). This is the real watermark test: a fixed mark lines up across pictures, content doesn't. You need at least ~20; 50 to 100 is better. Never resized.</span>
+      </label>
+      <div class="opts"><button type="button" class="btn go" id="runMany" disabled>Run the set</button><span id="manyInfo"></span></div>
+    </div>
+
+    <p class="status" id="status" aria-live="polite"></p>
+    <div class="bar" id="bar" hidden><i></i></div>
+    <div class="src" id="src" hidden><canvas id="srcCanvas"></canvas><p id="srcInfo"></p></div>
+  </section>
+
+  <section class="verdict black" id="verdict" hidden aria-live="polite">
+    <p class="kick" id="vKick"></p>
+    <p class="word" id="vWord"></p>
+    <p class="say" id="vSay"></p>
+    <p class="nums" id="vNums"></p>
+  </section>
+
+  <section id="results" hidden>
+    <div class="gridhead">
+      <div>
+        <h2>69 ways of looking</h2>
+        <!-- DRAFT COPY -->
+        <p>Strongest pattern score first. 1.00 = the threshold. A red frame crossed it; RECURS = it shows up in 2+ views and 2+ quarters of the picture. Tap any one to see it big.</p>
+      </div>
+      <div class="toggle" role="group" aria-label="Thumbnail view">
+        <button type="button" data-view="pic" aria-pressed="true">Picture</button>
+        <button type="button" data-view="spec" aria-pressed="false">Spectrum</button>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+
+    <div class="extras" id="extrasWrap" hidden>
+      <div class="gridhead">
+        <div>
+          <h2>Extra looks</h2>
+          <!-- DRAFT COPY -->
+          <p>Not scored. These aren't part of the tested set, so they never change the answer. They're here for your own eyes.</p>
+        </div>
+      </div>
+      <div class="grid" id="extras"></div>
+    </div>
+  </section>
+
+  <section id="multi" hidden>
+    <div class="panel">
+      <div class="scroll"><table class="mtable" id="mTable"></table></div>
+      <p class="legend" style="margin-top:14px">The set's spectrum, centre = zero frequency. Brightness = how well the phases agree across the pictures.</p>
+      <canvas class="cohpic" id="cohPic"></canvas>
+      <div class="legend"><span style="color:var(--signal)"><b></b>anchored (lines up across the set, off the grid)</span><span style="color:var(--steel)"><b></b>on the 8/16 px grid (blind band, never counted)</span><span style="color:var(--gold)"><b></b>survives the shift test (chance)</span></div>
+      <div class="scroll"><table class="mtable" id="mBins"></table></div>
+    </div>
+  </section>
+
+  <div class="explain">
+    <!-- DRAFT COPY: all three sections -->
+    <section>
+      <h3>How it looks</h3>
+      <p>Your picture gets bent 69 ways: colour channels pulled apart, saturation pushed until it clips, contrast stretched, the fine grain isolated from the shapes, single bits of each pixel pulled out on their own.</p>
+      <p>Every version goes through a Fourier transform, which turns anything that repeats into a bright dot. A dot that stands alone, away from the streaks edges make and the fuzz textures make, is a candidate.</p>
+    </section>
+    <section>
+      <h3>How it decides</h3>
+      <p>A candidate has to clear a prominence of 20.77. That number was frozen before anything unknown was scanned: 1.25 times the strongest dot found in 24 pictures known to be clean (camera photos, noise, plain renders, JPEG'd graphics).</p>
+      <p>Then it has to recur: the same spacing and angle in at least two different views AND at least two separate quarters of the picture. That's PATTERN. One view or one quarter only is WEAK. Nothing over the line: no strong pattern.</p>
+      <p class="q">A grid sitting exactly on the JPEG 8 / 16 pixel block lattice gets its own word, LATTICE (threshold 23.84), and never counts as PATTERN.</p>
+    </section>
+    <section>
+      <h3>What it can't see</h3>
+      <ul>
+        <li>Stripes lined up exactly with the picture's edges. That's on purpose, so JPEG blocks and resizing never cry wolf.</li>
+        <li>A mark that changes with every picture, or isn't periodic at all. One picture can only show a pattern that repeats inside it.</li>
+        <li>A watermark like SynthID doesn't repeat inside one picture. It lines up ACROSS pictures. That's what Many images tests: it found Google's mark in their images, and it's blind to marks hidden on the 8 / 16 px grid or keyed per picture.</li>
+      </ul>
+      <p class="q">A found pattern is a fingerprint of how a picture was made (a camera, an upscaler, a decoder). It's not proof of hidden data.</p>
+    </section>
+  </div>
+</main>
+
+<footer class="foot red">
+  <div class="wrap"><span>kurtholes.com / patterns</span><span>Runs on your device. No uploads, no tracking.</span><a href="/">Back to the wall</a></div>
+</footer>
+
+<dialog id="dlg" aria-labelledby="dTitle">
+  <div class="dlg">
+    <header>
+      <div><h3 id="dTitle"></h3><p class="why" id="dWhy"></p></div>
+      <button type="button" class="close" id="dClose">Close</button>
+    </header>
+    <div class="views">
+      <figure><div class="stage"><canvas id="dPic"></canvas></div><figcaption>The view itself (contrast stretched).</figcaption></figure>
+      <figure><div class="stage"><canvas id="dSpec"></canvas></div><figcaption>Its spectrum: repeats show as dots. Red rings = over the threshold, yellow = candidates below it, blue = labelled (grid / axis), never counted.</figcaption></figure>
+      <figure><div class="stage"><canvas id="dAc"></canvas></div><figcaption id="dAcCap">Autocorrelation (centre lags): a repeat shows as a regular lattice of spots.</figcaption></figure>
+    </div>
+    <div class="scroll"><table class="mtable" id="dPeaks"></table></div>
+  </div>
+</dialog>
+
+<script src="meter.js"></script>
+<script src="decode.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
