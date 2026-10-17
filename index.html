@@ -106,6 +106,13 @@ h1,h2,h3,p{margin:0}
 .mtable th,.mtable td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a1414}
 .mtable th{color:var(--ash);font-weight:500}
 .scroll{overflow-x:auto}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:12px}
+.pair figure{margin:0}.pair canvas{width:100%;height:auto;display:block;background:#000;image-rendering:pixelated}
+.pair figcaption{font-size:12px;color:var(--ash);margin-top:6px}
+.facts{list-style:none;margin:10px 0 0;padding:0;font-size:13px}.facts li{padding:6px 0;border-bottom:1px solid #2a1414;overflow-wrap:anywhere}
+.facts li.strong{color:var(--white)}.facts li.strong::before{content:"AI ";color:var(--signal);font-weight:700}
+.drop.ctl{min-height:120px;margin-top:12px}
+.bits{font:400 12px/1.4 var(--mono);color:var(--ash);overflow-wrap:anywhere}
 .cohpic{margin-top:12px;max-width:min(100%,720px);display:block;background:#000}
 .list{font-size:13px;color:var(--ash);margin-top:8px;max-height:160px;overflow:auto}
 
@@ -192,14 +199,30 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
         <input type="file" id="file2" accept="image/*" multiple>
         <span class="big">Drop a set</span>
         <!-- DRAFT COPY -->
-        <span class="small">Many pictures from ONE source, all the same size (same model, same camera). This is the real watermark test: a fixed mark lines up across pictures, content doesn't. You need at least ~20; 50 to 100 is better. Never resized.</span>
+        <span class="small">Many pictures from ONE source, all the same size (same model, same camera). This is the real watermark test: a fixed mark lines up across pictures, content doesn't. You need at least ~20; 50 to 100 is better. Never resized. Up to about 4.5 megapixels each (1536 x 2816 fits).</span>
       </label>
-      <div class="opts"><button type="button" class="btn go" id="runMany" disabled>Run the set</button><span id="manyInfo"></span></div>
+      <label class="drop ctl" id="drop3">
+        <input type="file" id="file3" accept="image/*" multiple>
+        <span class="big" style="font-size:clamp(22px,5vw,36px)">Control set (optional)</span>
+        <!-- DRAFT COPY -->
+        <span class="small">Pictures of the SAME size from a different source (a camera, another model). With a control, only frequencies that line up in the set AND differ from the control are counted: that rules out what any picture of this size shares (JPEG seams, decoders, a resize).</span>
+      </label>
+      <div class="opts"><button type="button" class="btn go" id="runMany" disabled>Run the set</button><span id="manyInfo"></span><span id="ctlInfo"></span><button type="button" class="btn" id="clearCtl" hidden>Clear control</button></div>
     </div>
 
     <p class="status" id="status" aria-live="polite"></p>
     <div class="bar" id="bar" hidden><i></i></div>
     <div class="src" id="src" hidden><canvas id="srcCanvas"></canvas><p id="srcInfo"></p></div>
+  </section>
+
+  <section class="panel" id="facts" hidden>
+    <h2 style="margin:0">What the file says</h2>
+    <!-- DRAFT COPY -->
+    <p class="legend" style="margin-top:6px">Read on this device from the file's own bytes: C2PA / Content Credentials, XMP, PNG text, EXIF. Signatures are not checked, and metadata is easy to strip or fake: if it's missing, that means nothing.</p>
+    <ul class="facts" id="metaList"></ul>
+    <h2 style="margin:18px 0 0">Open watermark reader (DWT-DCT)</h2>
+    <p class="legend" style="margin-top:6px">The invisible-watermark library's dwtDct mark, which Stable Diffusion's reference scripts and SDXL embed. Read from the file's full-size pixels. It's fragile: a resize, crop or strong JPEG erases it.</p>
+    <ul class="facts" id="wmList"></ul>
   </section>
 
   <section class="verdict black" id="verdict" hidden aria-live="polite">
@@ -240,8 +263,19 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
       <div class="scroll"><table class="mtable" id="mTable"></table></div>
       <p class="legend" style="margin-top:14px">The set's spectrum, centre = zero frequency. Brightness = how well the phases agree across the pictures.</p>
       <canvas class="cohpic" id="cohPic"></canvas>
-      <div class="legend"><span style="color:var(--signal)"><b></b>anchored (lines up across the set, off the grid)</span><span style="color:var(--steel)"><b></b>on the 8/16 px grid (blind band, never counted)</span><span style="color:var(--gold)"><b></b>survives the shift test (chance)</span></div>
+      <div class="legend"><span style="color:var(--signal)"><b></b>anchored (lines up across the set, off the grid)</span><span style="color:var(--steel)"><b></b>on the 8/16 px grid (counted only past a 100x stricter test, listed separately)</span><span style="color:var(--gold)"><b></b>survives the shift test (chance)</span></div>
+      <div class="scroll"><table class="mtable" id="mCmp"></table></div>
       <div class="scroll"><table class="mtable" id="mBins"></table></div>
+      <div class="scroll"><table class="mtable" id="mGrid"></table></div>
+      <h2 style="margin:22px 0 0">The pattern, made visible</h2>
+      <!-- DRAFT COPY -->
+      <p class="legend" id="patNote" style="margin-top:6px"></p>
+      <div class="pair">
+        <figure><canvas id="patMean"></canvas><figcaption>Averaged noise residual of the set (the fine grain, averaged). A fixed mark adds up; content averages away.</figcaption></figure>
+        <figure><canvas id="patRec"></canvas><figcaption>Rebuilt from the counted frequencies only (their average magnitude and phase), stretched to be visible.</figcaption></figure>
+        <figure><canvas id="patMeanT"></canvas><figcaption>Averaged residual, top-left 256 x 256 at full resolution.</figcaption></figure>
+        <figure><canvas id="patRecT"></canvas><figcaption>Rebuilt, top-left 256 x 256 at full resolution.</figcaption></figure>
+      </div>
     </div>
   </section>
 
@@ -263,7 +297,8 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
       <ul>
         <li>Stripes lined up exactly with the picture's edges. That's on purpose, so JPEG blocks and resizing never cry wolf.</li>
         <li>A mark that changes with every picture, or isn't periodic at all. One picture can only show a pattern that repeats inside it.</li>
-        <li>A watermark like SynthID doesn't repeat inside one picture. It lines up ACROSS pictures. That's what Many images tests: it found Google's mark in their images, and it's blind to marks hidden on the 8 / 16 px grid or keyed per picture.</li>
+        <li>A watermark like SynthID doesn't repeat inside one picture. It lines up ACROSS pictures. That's what Many images tests. Others have reported phase-locked frequencies in Gemini output this way (github.com/aloshdenny/reverse-SynthID, not peer reviewed). It can't see marks keyed to each picture or adapted to the content, and on the 8 / 16 px grid it only counts what passes a much stricter test.</li>
+        <li>Lining up is not proof of a watermark. Anything fixed in image coordinates lines up too: a decoder's or upscaler's fingerprint, a border, a vignette. Use a control set from another source to rule those out.</li>
       </ul>
       <p class="q">A found pattern is a fingerprint of how a picture was made (a camera, an upscaler, a decoder). It's not proof of hidden data.</p>
     </section>
@@ -290,6 +325,7 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
 </dialog>
 
 <script src="meter.js"></script>
+<script src="meta.js"></script>
 <script src="decode.js"></script>
 <script src="app.js"></script>
 </body>

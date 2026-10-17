@@ -52,7 +52,7 @@
   function decode(file) {
     return file.arrayBuffer().then(function (ab) {
       var bytes = new Uint8Array(ab), info = D.sniff(bytes), notes = [];
-      var base = { name: file.name, bytes: file.size, notes: notes, kind: info.type };
+      var base = { name: file.name, bytes: file.size, notes: notes, kind: info.type, fileBytes: bytes };
       if (info.type === 'png') {
         return D.decodePNG(bytes).then(function (r) {
           if (r.translucent) notes.push('This PNG has transparency (' + r.translucent.toLocaleString() + ' px). Like the command-line scanner, the finder reads the colour stored under it; it does not paint it onto a background.');
@@ -155,7 +155,7 @@
   // ------------------------------------------------------------------ ONE IMAGE
   function runOne(file) {
     var my = ++runId, cap = +$('cap').value;
-    $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('extrasWrap').hidden = true;
+    $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('extrasWrap').hidden = true; $('facts').hidden = true;
     $('grid').innerHTML = ''; $('extras').innerHTML = '';
     state = { perms: {}, view: state.view, extras: {}, img: null, verdict: null, decodePath: null };
     delete $('verdict').dataset.json;
@@ -168,8 +168,12 @@
       $('src').hidden = false; drawRGB($('srcCanvas'), img, 160);
       $('srcInfo').textContent = raw.name + ' - ' + raw.W + ' x ' + raw.H + ' px' + (img.from ? ' (analysed at ' + img.W + ' x ' + img.H + ': area-averaged down to the ' + cap + ' px setting, so periods are in the smaller pixels)' : ' (analysed at full size)') + (raw.notes.length ? ' ' + raw.notes.join(' ') : '');
       state.decodePath = raw.path;
+      showFacts(raw, my);
       makePool(NW);
-      return Promise.all(pool.map(function (s) { return send(s, { cmd: 'init', rgb: img.rgb.buffer.slice(0), H: img.H, W: img.W }); }));
+      return Promise.all(pool.map(function (s) { return send(s, { cmd: 'init', rgb: img.rgb.buffer.slice(0), H: img.H, W: img.W }); })).then(function () {
+        // the DWT-DCT reader needs the file's own pixels, not the analysis-size copy
+        queue({ cmd: 'wm', rgb: raw.rgb.buffer.slice(0), H: raw.H, W: raw.W }).then(function (r) { if (my === runId) showWm(r.wm); }, function (e) { if (my === runId) setList($('wmList'), [{ what: 'Could not read: ' + e.message }]); });
+      });
     }).then(function () {
       if (my !== runId || !state.img) return;
       $('results').hidden = false;
@@ -269,6 +273,37 @@
     runExtras();
   }
 
+  // ------------------------------------------------------------------ what the file says (meta.js) + the DWT-DCT reader (wmdecode.js)
+  function setList(ul, items) {
+    ul.innerHTML = '';
+    items.forEach(function (it) { var li = document.createElement('li'); if (it.strong) li.className = 'strong'; li.textContent = it.what; if (it.sub) { var d = document.createElement('div'); d.className = 'bits'; d.textContent = it.sub; li.appendChild(d); } ul.appendChild(li); });
+  }
+  function showFacts(raw, my) {
+    $('facts').hidden = false;
+    setList($('metaList'), [{ what: 'Reading...' }]); setList($('wmList'), [{ what: 'Reading...' }]);
+    window.HPMeta.read(raw.fileBytes).then(function (m) {
+      if (my !== runId) return;
+      var items = m.flags.slice();
+      if (m.c2pa && m.c2pa.is_c2pa && m.c2pa.actions.length) items.push({ what: 'C2PA actions: ' + m.c2pa.actions.join(', ') });
+      if (m.xmp) ['xmp:CreatorTool', 'tiff:Software', 'photoshop:Credit'].forEach(function (k) { if (m.xmp[k]) items.push({ what: 'XMP ' + k + ' = ' + m.xmp[k] }); });
+      if (m.exif) ['Make', 'Model', 'Artist'].forEach(function (k) { if (m.exif[k]) items.push({ what: 'EXIF ' + k + ' = ' + m.exif[k] }); });
+      (m.text || []).forEach(function (t) { if (!m.flags.some(function (f) { return f.what.indexOf('"' + t.key + '"') >= 0; })) items.push({ what: 'PNG text "' + t.key + '" = ' + t.value.slice(0, 160) + (t.value.length > 160 ? '...' : '') }); });
+      if (!items.length) items.push({ what: 'Nothing: no C2PA, no AI source type, no generator text, no EXIF software (' + m.format.toUpperCase() + '). That proves nothing either way.' });
+      else if (!m.ai_declared) items.push({ what: 'The file does not declare itself AI-made.' });
+      setList($('metaList'), items);
+    });
+  }
+  function showWm(w) {
+    if (w.error) { setList($('wmList'), [{ what: w.error }]); return; }
+    var items = w.known.map(function (k) {
+      var hit = k.p < 1e-6;
+      return { strong: hit, what: (hit ? 'FOUND: ' : '') + k.name + ': ' + k.match + ' of ' + k.L + ' bits match (chance of that many by luck: ' + (k.p < 1e-12 ? '< 1e-12' : k.p.toPrecision(2)) + ')',
+        sub: 'read ' + (k.text != null ? '"' + k.text + '" = ' : '') + '0x' + k.hex + ', ' + k.blocks_per_bit.toFixed(1) + ' blocks per bit' };
+    });
+    items.push({ what: w.verdict === 'NO-MATCH' ? 'No known DWT-DCT payload. Expected on most pictures: the mark is fragile, and most generators don\'t use it.' : 'A known open watermark is in this picture.' });
+    setList($('wmList'), items);
+  }
+
   var EXTRAS = [['gamma25', 'Darks lifted (gamma 0.25)'], ['gamma50', 'Darks lifted (gamma 0.5)'], ['sat999', 'Saturation x999'],
     ['levels', 'Auto levels (colour)'], ['equalize', 'Equalized (colour)'], ['chroma', 'Chroma residual x24'], ['residual', 'Fine-grain residual x12']];
   function runExtras() {
@@ -338,8 +373,18 @@
     $('manyInfo').textContent = manyFiles.length ? manyFiles.length + ' pictures chosen' : '';
     $('runMany').disabled = manyFiles.length < 2;
   }
-  $('runMany').onclick = function () { runMany(manyFiles); };
-  function runMany(files) {
+  var ctlFiles = [];
+  function setCtl(files) {
+    ctlFiles = Array.prototype.filter.call(files, function (f) { return /^image\//.test(f.type) || /\.(png|jpe?g|webp)$/i.test(f.name); })
+      .sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+    $('ctlInfo').textContent = ctlFiles.length ? ctlFiles.length + ' control pictures' : '';
+    $('clearCtl').hidden = !ctlFiles.length;
+  }
+  $('clearCtl').onclick = function () { setCtl([]); };
+  $('runMany').onclick = function () { runMany(manyFiles, ctlFiles); };
+  var MANY_MAX_PX = 4500000; // 1536 x 2816 (4.33 MP) fits; float32 accumulators (Oct 17 2026; was 2.4 MP)
+  function runMany(files, ctl) {
+    ctl = ctl || [];
     var my = ++runId;
     $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('src').hidden = true;
     delete $('verdict').dataset.json;
@@ -348,29 +393,30 @@
     status('Checking sizes...'); progress(0);
     // pass 1: sizes (never resized; mixed sizes are refused, like the Python)
     var chain = Promise.resolve();
-    files.forEach(function (f) {
+    files.concat(ctl).forEach(function (f) {
       // the STORED size (EXIF orientation ignored, like the Python and like decode()): a rotated phone JPEG must not
       // count as W x H here and arrive as H x W later (that garbled the set before Oct 14 2026)
       chain = chain.then(function () { return sizeOf(f).then(function (z) { var key = z.W + ' x ' + z.H; (sizes[key] = sizes[key] || []).push(f.name); }); });
     });
     chain.then(function () {
       var keys = Object.keys(sizes);
-      if (keys.length > 1) throw new Error('These are not all one size, and this test never resizes: ' + keys.map(function (s) { return s + ' (' + sizes[s].length + ')'; }).join(', ') + '. Pick one size.');
+      if (keys.length > 1) throw new Error('These are not all one size' + (ctl.length ? ' (set and control together)' : '') + ', and this test never resizes: ' + keys.map(function (s) { return s + ' (' + sizes[s].length + ')'; }).join(', ') + '. Pick one size.');
       var wh = keys[0].split(' x '); W = +wh[0]; H = +wh[1];
       if (Math.min(W, H) < 64) throw new Error('Too small: ' + keys[0] + '.');
-      if (W * H > 2400000) throw new Error(keys[0] + ' is too big for the in-browser set test (the limit is about 2.4 megapixels, e.g. 1536 x 1536).');
-      return send(w, { cmd: 'coh-start', H: H, W: W });
+      if (W * H > MANY_MAX_PX) throw new Error(keys[0] + ' is too big for the in-browser set test (the limit is about 4.5 megapixels, e.g. 1536 x 2816).');
+      return send(w, { cmd: 'coh-start', which: 'set', H: H, W: W }).then(function () { if (ctl.length) return send(w, { cmd: 'coh-start', which: 'control', H: H, W: W }); });
     }).then(function () {
-      var t0 = performance.now(), feed = Promise.resolve();
-      files.forEach(function (f, i) {
+      var t0 = performance.now(), feed = Promise.resolve(), all = files.map(function (f) { return [f, 'set']; }).concat(ctl.map(function (f) { return [f, 'control']; }));
+      all.forEach(function (fw, i) {
+        var f = fw[0];
         feed = feed.then(function () {
           if (my !== runId) throw new Error('cancelled');
           return decode(f).then(function (img) {
             if (img.W !== W || img.H !== H) throw new Error(f.name + ' decoded as ' + img.W + ' x ' + img.H + ', not ' + W + ' x ' + H + ' like the rest of the set. Nothing was computed from a mismatched picture; take it out and run again.');
             if (img.notes.length) notes[img.notes.join(' ')] = (notes[img.notes.join(' ')] || 0) + 1;
-            return send(w, { cmd: 'coh-feed', rgb: img.rgb.buffer, W: img.W, H: img.H }, [img.rgb.buffer]);
+            return send(w, { cmd: 'coh-feed', which: fw[1], rgb: img.rgb.buffer, W: img.W, H: img.H }, [img.rgb.buffer]);
           })
-            .then(function () { k++; progress(k / files.length); status('Lining up phases: ' + k + ' / ' + files.length + ' (' + ((performance.now() - t0) / 1000).toFixed(0) + ' s)'); });
+            .then(function () { k++; progress(k / all.length); status('Lining up phases: ' + k + ' / ' + all.length + (ctl.length ? ' (set + control)' : '') + ' (' + ((performance.now() - t0) / 1000).toFixed(0) + ' s)'); });
         });
       });
       return feed.then(function () { return send(w, { cmd: 'coh-eval' }); }).then(function (r) { showMany(r, (performance.now() - t0) / 1000, notes); });
@@ -383,17 +429,25 @@
     // DRAFT COPY (every sentence below)
     var word, say;
     if (ev.underpowered) { word = 'Not enough pictures'; say = 'With ' + ev.N + ' pictures no frequency can pass the test (it needs agreement above ' + ev.cstar.toFixed(3) + ', which is impossible). Use at least ' + ev.n_min + ' pictures of this size. This is NOT a clean result.'; }
-    else if (anch) { word = ev.n_anch + ' fixed signal' + (ev.n_anch === 1 ? '' : 's') + ' line up'; say = ev.n_anch + ' frequencies have the same phase in picture after picture: something is fixed in image coordinates across this set. A watermark does this (Google\'s SynthID showed 24 to 27 such frequencies in 98 Gemini images). So does any shared content: a fixed scene, a border, a vignette, a decoder fingerprint. Only a test against matched pictures from another source can tell those apart.'; }
-    else if (ev.n_grid > 0) { word = 'Nothing off the grid'; say = 'No fixed signal lines up off the 8 / 16 px grid, at this number of pictures (it can see agreement above ' + ev.cstar.toFixed(3) + '). Some frequencies ON the grid line up, which is what decoders and JPEG seams do, and a mark hidden there would be invisible to this test. Not "clean": a mark keyed to each picture would not show here either.'; }
+    else if (r.cmp) {
+      var cm = r.cmp, nso = cm.n_set_only + cm.n_set_only_grid;
+      box.className = 'verdict ' + (nso ? 'red' : 'black');
+      if (nso) { word = nso + ' signal' + (nso === 1 ? '' : 's') + ' only in this set'; say = cm.n_set_only + ' off-grid and ' + cm.n_set_only_grid + ' grid frequencies line up across this set AND differ from the ' + cm.Nb + ' control pictures (two-sample test, alpha 0.01 over ' + cm.tests.toLocaleString() + ' tests; grid ones 100x stricter). Something fixed in image coordinates is in this set and not in the control. A watermark does that; so does a fingerprint that only this source has (its decoder, its upscaler). It is not, by itself, proof of a watermark.'; }
+      else { word = 'Nothing beyond the control'; say = 'Whatever lines up in this set (' + ev.n_anch + ' off-grid, ' + ev.n_grid_strict + ' grid frequencies) also lines up the same way in the control, or nothing does. Not "clean": a mark keyed to each picture, or one that adapts to the content, would not show here.'; }
+    }
+    else if (anch) { word = ev.n_anch + ' fixed signal' + (ev.n_anch === 1 ? '' : 's') + ' line up'; say = ev.n_anch + ' frequencies have the same phase in picture after picture: something is fixed in image coordinates across this set. A watermark does this. So does any shared content: a fixed scene, a border, a vignette, a decoder fingerprint. Add a control set from another source (same size) to tell those apart.'; }
+    else if (ev.n_grid_strict > 0) { word = ev.n_grid_strict + ' on the grid'; say = 'Nothing lines up off the 8 / 16 px grid, but ' + ev.n_grid_strict + ' grid frequencies pass the stricter test (agreement above ' + ev.cstar_grid.toFixed(3) + ', 100x stricter than off the grid). Block-based marks (like the open DWT-DCT watermark) live there, and so do JPEG seams and decoders: add a control set of the same size to tell them apart.'; }
+    else if (ev.n_grid > 0) { word = 'Nothing off the grid'; say = 'No fixed signal lines up off the 8 / 16 px grid, at this number of pictures (it can see agreement above ' + ev.cstar.toFixed(3) + '). Some frequencies ON the grid line up a little, which is what decoders and JPEG seams do, but none passes the stricter grid test (' + ev.cstar_grid.toFixed(3) + '). Not "clean": a mark keyed to each picture would not show here either.'; }
     else { word = 'Nothing lines up'; say = 'No fixed signal lines up across these pictures, at this number of pictures (it can see agreement above ' + ev.cstar.toFixed(3) + '). Not "clean": a mark keyed to each picture, or one that adapts to the content, would not show here.'; }
     if (dv.warn) say += ' WARNING: these pictures share most of their content (similarity ' + dv.rho_res.toFixed(2) + ' / ' + dv.rho_raw.toFixed(2) + '), so anything that lines up could just be that content.';
     var nk = Object.keys(notes || {});
     if (nk.length) say += ' ' + nk.map(function (t) { return '(' + notes[t] + ' picture' + (notes[t] === 1 ? '' : 's') + ') ' + t; }).join(' ');
     $('vWord').textContent = word; $('vSay').textContent = say;
-    $('verdict').dataset.json = JSON.stringify({ mode: 'many', verdict: ev.verdict, N: ev.N, W: ev.W, H: ev.H, n_anch: ev.n_anch, n_grid: ev.n_grid, n_shared: ev.n_shared,
+    $('verdict').dataset.json = JSON.stringify({ mode: 'many', verdict: ev.verdict, N: ev.N, W: ev.W, H: ev.H, n_anch: ev.n_anch, n_grid: ev.n_grid, n_grid_strict: ev.n_grid_strict, n_shared: ev.n_shared,
+      control: r.cmp ? { N: r.cmp.Nb, n_set_only: r.cmp.n_set_only, n_set_only_grid: r.cmp.n_set_only_grid } : null,
       n_grid_anchored: ev.n_grid_anchored, cstar: ev.cstar, tests: ev.tests, counts: ev.counts, rho_res: dv.rho_res, rho_raw: dv.rho_raw, warn: dv.warn,
       top_bins: ev.bins.slice(0, 10), shift_kind: M.DITHER_KIND });
-    $('vNums').textContent = 'verdict ' + ev.verdict + ' | N ' + ev.N + ' | detection floor C* ' + ev.cstar.toFixed(4) + ' (Rayleigh, Bonferroni over ' + ev.tests.toLocaleString() + ' tests, alpha ' + ev.alpha + ') | grid-band shift-dead bins ' + ev.n_grid_anchored + ' (the blind band is ' + (100 * ev.grid_blind_fraction).toFixed(1) + '% of all bins) | shift-surviving ' + ev.n_shared + ' | content similarity ' + dv.rho_res.toFixed(3) + ' residual / ' + dv.rho_raw.toFixed(3) + ' raw (independent ~' + (dv.independent_expectation || 0).toFixed(3) + ') | ' + secs.toFixed(1) + ' s';
+    $('vNums').textContent = 'verdict ' + ev.verdict + ' | N ' + ev.N + ' | detection floor C* ' + ev.cstar.toFixed(4) + ' (Rayleigh, Bonferroni over ' + ev.tests.toLocaleString() + ' tests, alpha ' + ev.alpha + ') | grid-band shift-dead bins ' + ev.n_grid_anchored + ', past the strict grid floor ' + ev.cstar_grid.toFixed(4) + ': ' + ev.n_grid_strict + (r.cmp ? ' | control N ' + r.cmp.Nb + ', set-only ' + r.cmp.n_set_only + ' off-grid / ' + r.cmp.n_set_only_grid + ' grid' : '') + ' (the grid band is ' + (100 * ev.grid_blind_fraction).toFixed(1) + '% of all bins) | shift-surviving ' + ev.n_shared + ' | content similarity ' + dv.rho_res.toFixed(3) + ' residual / ' + dv.rho_raw.toFixed(3) + ' raw (independent ~' + (dv.independent_expectation || 0).toFixed(3) + ') | ' + secs.toFixed(1) + ' s';
     $('multi').hidden = false;
     var t = '<tr><th>channel</th><th>anchored off-grid</th><th>on the grid</th><th>grid, shift-dead</th><th>shift-surviving</th></tr>';
     Object.keys(ev.counts).forEach(function (c) { var q = ev.counts[c]; t += '<tr><td>' + c + '</td><td>' + q.anchored_offgrid + '</td><td>' + q.grid + '</td><td>' + q.grid_anchored + '</td><td>' + q.shared_offgrid + '</td></tr>'; });
@@ -411,6 +465,18 @@
     var b = '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">Strongest anchored frequencies</caption><tr><th>channel</th><th>fy, fx (cycles / picture)</th><th>period px</th><th>angle</th><th>agreement C</th></tr>';
     ev.bins.slice(0, 20).forEach(function (q) { b += '<tr><td>' + q.ch + '</td><td>' + q.fy + ', ' + q.fx + '</td><td>' + q.period_px.toFixed(2) + '</td><td>' + q.angle_deg.toFixed(1) + '\u00b0</td><td>' + q.C.toFixed(3) + '</td></tr>'; });
     $('mBins').innerHTML = ev.bins.length ? b : '';
+    var gt = '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">On the 8 / 16 px grid, past the stricter floor ' + ev.cstar_grid.toFixed(3) + '</caption><tr><th>channel</th><th>fy, fx (cycles / picture)</th><th>period px</th><th>angle</th><th>agreement C</th></tr>';
+    ev.grid_bins.slice(0, 20).forEach(function (q) { gt += '<tr><td>' + q.ch + '</td><td>' + q.fy + ', ' + q.fx + '</td><td>' + q.period_px.toFixed(2) + '</td><td>' + q.angle_deg.toFixed(1) + '\u00b0</td><td>' + q.C.toFixed(3) + '</td></tr>'; });
+    $('mGrid').innerHTML = ev.grid_bins.length ? gt : '';
+    if (r.cmp) {
+      var ct = '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">Only in this set, not in the ' + r.cmp.Nb + ' control pictures</caption><tr><th>channel</th><th>fy, fx</th><th>period px</th><th>angle</th><th>C set</th><th>C control</th><th>grid?</th></tr>';
+      r.cmp.bins.slice(0, 15).map(function (q) { q.g = 'no'; return q; }).concat(r.cmp.grid_bins.slice(0, 10).map(function (q) { q.g = 'yes'; return q; })).forEach(function (q) { ct += '<tr><td>' + q.ch + '</td><td>' + q.fy + ', ' + q.fx + '</td><td>' + q.period_px.toFixed(2) + '</td><td>' + q.angle_deg.toFixed(1) + '\u00b0</td><td>' + q.C.toFixed(3) + '</td><td>' + q.C_control.toFixed(3) + '</td><td>' + q.g + '</td></tr>'; });
+      $('mCmp').innerHTML = (r.cmp.bins.length + r.cmp.grid_bins.length) ? ct : '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">Against ' + r.cmp.Nb + ' control pictures: no frequency is only in this set.</caption>';
+    } else $('mCmp').innerHTML = '';
+    var pt = r.pattern;
+    [['patMean', pt.mean], ['patRec', pt.rebuilt], ['patMeanT', pt.meanTile], ['patRecT', pt.rebuiltTile]].forEach(function (a) { putPack($(a[0]), a[1]); });
+    $('patNote').textContent = pt.empty ? 'No frequency was counted, so the rebuilt picture is flat grey; the averaged residual is shown as it is. Display only: nothing here can be saved as numbers.' :
+      'Rebuilt from ' + pt.n_bins + ' frequency bins' + (r.cmp ? ' that are only in this set (not in the control)' : ' (anchored off the grid, plus grid ones past the stricter test)') + '. Grey = zero; both pictures are contrast-stretched on their own scale. Display only: nothing here can be saved as numbers, and nothing is taken out of any picture.';
     status('Done. ' + ev.N + ' pictures in ' + secs.toFixed(1) + ' s, all on this device.'); progress(null);
   }
 
@@ -423,6 +489,7 @@
   }
   wireDrop($('drop1'), $('file1'), function (fs) { runOne(fs[0]); });
   wireDrop($('drop2'), $('file2'), function (fs) { setMany(fs); });
+  wireDrop($('drop3'), $('file3'), function (fs) { setCtl(fs); });
   if (!window.HPDecode) status('The page did not load completely (decode.js is missing).', true);
   else if (!window.Worker || !window.createImageBitmap) status('This browser cannot run the finder (it needs Web Workers and createImageBitmap).', true);
 })();
