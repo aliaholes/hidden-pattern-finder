@@ -77,8 +77,8 @@ file directly with `file://` won't work.
 - Metadata is trivially stripped or forged. Its absence means nothing.
 - SynthID: Google describes SynthID-Image as a learned post-hoc encoder/decoder (Gowal et al. 2025,
   https://arxiv.org/abs/2510.09263). Community work reports phase-locked carriers in Gemini output
-  (https://github.com/aloshdenny/reverse-SynthID, not peer reviewed). This repo has no Gemini test set of its own and
-  makes no claim about SynthID.
+  (https://github.com/aloshdenny/reverse-SynthID, not peer reviewed). This repo makes no claim that it detects SynthID;
+  see the two SynthID notes below and RESULTS.md.
 - Memory: a 1536 x 2816 set uses about 0.8 GB in the worker, about 1.1 GB with a control.
 
 ## Test results
@@ -124,7 +124,7 @@ python3 -m http.server 8765 & node tools/harness/shots.js   # headless Chromium:
 - `tools/harness/`: the test harness. `tools/smoke-coh.js`: a quick synthetic check of the set test.
 
 
-> SynthID: tested on public Nano Banana data. No detection; the data was too small or stripped. See RESULTS.md.
+> SynthID, first test (Nano Banana 2 via X, Banana100 edit chains): no detection. The same-size groups were too small or re-encoded. See RESULTS.md.
 
 ## Fingerprint tab
 
@@ -150,5 +150,7 @@ JS-vs-Python correlation).
 
 > reverse-SynthID check: on its public dataset (reverse-SynthID by Alosh Denny, github.com/aloshdenny/reverse-SynthID),
 > Many images finds frequencies that replicate across Nano Banana Pro and Gemini 3.1 images and not in camera, DALL·E or
-> synthetic controls. That is consistent with a fixed phase-locked component; it is not proof that it is SynthID.
+> synthetic controls. That is consistent with a fixed phase-locked component, but it is not proof that it is SynthID: it may be a shared
+> Google pipeline trace (decoder or upsampler; the strongest bins sit at Nyquist / quarter-band). The newer models' solid-colour
+> sets were too small to test.
 > See RESULTS.md.
