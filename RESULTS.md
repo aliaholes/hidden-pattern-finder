@@ -50,3 +50,19 @@ Photos: 160 Unsplash-licensed photos from Lorem Picsum, 512 x 512 (`tools/harnes
 | fixed_pattern | 160 | 0 (0.0 %) | n/a | n/a |
 | rivagan | 160 | 0 (0.0 %) | n/a | n/a |
 | trustmark | 160 | 0 (0.0 %) | n/a | n/a |
+
+## SynthID / Nano Banana investigation (Oct 2026)
+
+**Data.** (1) 59 Nano Banana 2 images from posts linked in awesome-nanobanana2, downloaded at `?name=orig` from X. All are re-encoded (JPEG q≈85, plus 2 PNGs). The largest same-size group has 8 images, and at most 4 of those are confirmed outputs. That is below the ~20 images the phase-coherence test needs, so the test cannot run meaningfully. (2) Banana100 (arXiv 2604.03400, HF `kenantang/Banana100`): Nano Banana **Pro** API PNGs from iterative "replica" edit chains. 10 seeds and 13 complete runs (step 1 and step 100) were analysed, all on a common 1504×1504 centre crop. (3) Wikimedia Commons camera photos from before 2020 (41 so far) as controls.
+
+**Metadata.** No C2PA, IPTC or SynthID markers on any raw download (X, repo thumbnails, Banana100 PNGs). Every distribution channel had stripped them.
+
+**Edit-chain spectra (D = step100 − step1, green channel, whitened).**
+- The one feature that recurs is horizontal banding with a period of 32 px. It is the top peak in 5 of 10 seeds.
+- Every other peak is seed-specific (texture, periods of 2–6 px).
+- Split-half replication over seeds (top 50 bins): mean overlap 0.68 vs 0.002 expected by chance. That is weak, and it comes only from the 32 px line.
+- A 32 px period lines up with a 16/32-px processing grid. It is consistent with a block/tiling artifact and does not show a watermark carrier.
+- The diagonal ~40 px pattern reported on Reddit (r/nanobanana, u/thrftshxp, after oversaturation) shows **no excess power** here: whitened power in that region is at or below the median.
+- Visual: `shots/synthid-chain-spectrum.png` (not committed).
+
+**Conclusion.** With this data the finder does **not** detect SynthID. The NB2 groups are too small to test. The Banana100 chains show a weak grid-aligned 32 px artifact, nothing that matches published reverse-SynthID carrier claims, and no diagonal pattern. Confidence that the tool *cannot* detect SynthID is low: no group had 30+ native, unmodified images at one size.

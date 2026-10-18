@@ -73,3 +73,5 @@ Also:
   the new grid-strict branch.
 - The DWT-DCT payload length isn't in the image, so only the two published payloads are tested.
 - Screenshots: not committed (12 MB). They can be regenerated with `tools/harness/shots.js`, or attached to the PR.
+
+- SynthID investigation scripts (fetch_nb2.py, fetch_commons.py, banana100_pages.py, chain_fft.py, synthid_analyze.js). Result: no detection, see RESULTS.md.

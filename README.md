@@ -122,3 +122,6 @@ python3 -m http.server 8765 & node tools/harness/shots.js   # headless Chromium:
 - `wmdecode.js`: the DWT-DCT reader.
 - `meta.js`: the metadata reader.
 - `tools/harness/`: the test harness. `tools/smoke-coh.js`: a quick synthetic check of the set test.
+
+
+> SynthID: tested on public Nano Banana data. No detection; the data was too small or stripped. See RESULTS.md.
