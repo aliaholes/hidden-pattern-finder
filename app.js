@@ -86,27 +86,33 @@
       return decode(file).then(function (r) { return { W: r.W, H: r.H }; });
     });
   }
-  function boxDownRGB(img, cap) { // area average to fit cap (deviation D6)
-    var W = img.W, H = img.H, s = cap / Math.max(W, H);
-    if (s >= 1) return img;
-    var tw = Math.max(1, Math.round(W * s)), th = Math.max(1, Math.round(H * s)), out = new Uint8Array(tw * th * 3);
+  // THE ONE RESIZE RULE (Oct 17 2026; meter.js deviation D6, closed): the same as the command line's int_reduce(), bit
+  // for bit. Long side <= cap: no resize at all. Above it, k = ceil(long side / cap): W and H are cropped DOWN to
+  // multiples of k (the right/bottom remainder is dropped and reported), and each output channel is the integer mean of
+  // its k x k block, (sum + floor(k*k/2)) / (k*k) floored. Why a whole number: a block-lattice frequency f (a multiple of
+  // 1/8 cycles per px) becomes k*f mod 1 in the smaller pixels, still a multiple of 1/8, so the JPEG/WebP block grid stays
+  // ON the lattice and keeps its label. The old area average by a non-integer factor moved it off the lattice, where it
+  // turned into a false "candidate" (a Nano Banana 2 picture read WEAK at 5.03 px here and CLEAN on the command line).
+  function intReduceRGB(img, cap) {
+    var W = img.W, H = img.H, m = Math.max(W, H);
+    if (m <= cap) return img;
+    var k = Math.ceil(m / cap), tw = Math.floor(W / k), th = Math.floor(H / k), kk = k * k, half = Math.floor(kk / 2);
+    var out = new Uint8Array(tw * th * 3), src = img.rgb;
     for (var ty = 0; ty < th; ty++) {
-      var y0 = ty * H / th, y1 = (ty + 1) * H / th;
       for (var tx = 0; tx < tw; tx++) {
-        var x0 = tx * W / tw, x1 = (tx + 1) * W / tw, acc = [0, 0, 0], wsum = 0;
-        for (var y = Math.floor(y0); y < Math.ceil(y1); y++) {
-          var wy = Math.min(y + 1, y1) - Math.max(y, y0);
-          for (var x = Math.floor(x0); x < Math.ceil(x1); x++) {
-            var wgt = wy * (Math.min(x + 1, x1) - Math.max(x, x0)), i = 3 * (y * W + x);
-            acc[0] += img.rgb[i] * wgt; acc[1] += img.rgb[i + 1] * wgt; acc[2] += img.rgb[i + 2] * wgt; wsum += wgt;
-          }
+        var r = 0, g = 0, b = 0;
+        for (var y = ty * k; y < ty * k + k; y++) {
+          var i = 3 * (y * W + tx * k);
+          for (var x = 0; x < k; x++, i += 3) { r += src[i]; g += src[i + 1]; b += src[i + 2]; }
         }
         var o = 3 * (ty * tw + tx);
-        out[o] = Math.round(acc[0] / wsum); out[o + 1] = Math.round(acc[1] / wsum); out[o + 2] = Math.round(acc[2] / wsum);
+        out[o] = Math.floor((r + half) / kk); out[o + 1] = Math.floor((g + half) / kk); out[o + 2] = Math.floor((b + half) / kk);
       }
     }
-    return { rgb: out, W: tw, H: th, name: img.name, bytes: img.bytes, from: [W, H], notes: img.notes, path: img.path };
+    return { rgb: out, W: tw, H: th, name: img.name, bytes: img.bytes, notes: img.notes, path: img.path,
+      reduced: { k: k, from: [W, H], to: [tw, th], dropped_px: { right: W - tw * k, bottom: H - th * k }, filter: 'integer-block-mean' } };
   }
+  function sizeWord(k) { return k === 2 ? 'half' : (k === 3 ? 'a third' : (k === 4 ? 'a quarter' : '1/' + k)); }
   function drawRGB(canvas, img, max) {
     var s = Math.min(1, max / Math.max(img.W, img.H)), w = Math.max(1, Math.round(img.W * s)), h = Math.max(1, Math.round(img.H * s));
     var c = document.createElement('canvas'); c.width = img.W; c.height = img.H;
@@ -162,11 +168,12 @@
     status('Reading ' + file.name + ' on this device...'); progress(0);
     decode(file).then(function (raw) {
       if (my !== runId) return;
-      var img = boxDownRGB(raw, cap);
+      var img = intReduceRGB(raw, cap);
       if (Math.min(img.W, img.H) < 192) throw new Error('This picture is ' + img.W + ' x ' + img.H + ' px. It needs at least 192 px on its short side (four quarters of 96 px each).');
       state.img = img;
       $('src').hidden = false; drawRGB($('srcCanvas'), img, 160);
-      $('srcInfo').textContent = raw.name + ' - ' + raw.W + ' x ' + raw.H + ' px' + (img.from ? ' (analysed at ' + img.W + ' x ' + img.H + ': area-averaged down to the ' + cap + ' px setting, so periods are in the smaller pixels)' : ' (analysed at full size)') + (raw.notes.length ? ' ' + raw.notes.join(' ') : '');
+      var rd = img.reduced, dropped = rd ? rd.dropped_px.right + rd.dropped_px.bottom : 0;
+      $('srcInfo').textContent = raw.name + ' - ' + raw.W + ' x ' + raw.H + ' px' + (rd ? ' (analysed at ' + sizeWord(rd.k) + ' size, ' + img.W + ' x ' + img.H + ': every ' + rd.k + ' x ' + rd.k + ' block of pixels averaged into one' + (dropped ? ', after trimming ' + (rd.dropped_px.right ? rd.dropped_px.right + ' px off the right' : '') + (rd.dropped_px.right && rd.dropped_px.bottom ? ' and ' : '') + (rd.dropped_px.bottom ? rd.dropped_px.bottom + ' px off the bottom' : '') + ' so the blocks fit' : '') + '. Periods are in those smaller pixels: multiply them by ' + rd.k + ' for the original.)' : ' (analysed at full size)') + (raw.notes.length ? ' ' + raw.notes.join(' ') : '');
       state.decodePath = raw.path;
       makePool(NW);
       return Promise.all(pool.map(function (s) { return send(s, { cmd: 'init', rgb: img.rgb.buffer.slice(0), H: img.H, W: img.W }); }));
@@ -224,6 +231,8 @@
     };
   });
 
+  // the WEAK reasons and the block-grid note (Oct 17 2026) live in meter.js (M.weakSay / M.gridSay) so the test harness can
+  // call them directly; see there.
   var WORDS = {
     PATTERN: ['Found a repeating pattern', 'red'],
     LATTICE: ['Found a grid on the block lattice', 'red'],
@@ -254,16 +263,19 @@
     // DRAFT COPY (every sentence below)
     if (v.verdict === 'PATTERN') say = 'A repeat every ' + top.period_px.toFixed(2) + ' px at ' + top.angle_deg.toFixed(1) + '\u00b0, standing out up to ' + (top.max_prominence / T).toFixed(1) + 'x past the threshold, in ' + top.n_permutations + ' of the 69 views and ' + top.n_crops + ' of the 4 quarters.' + (top.harmonic_of ? ' (It is harmonic ' + top.harmonic_of.n + ' of a longer ' + top.harmonic_of.period_px.toFixed(2) + ' px repeat.)' : '') + ' That is a fingerprint of how the picture was made. It is not, by itself, proof of hidden data.';
     else if (v.verdict === 'LATTICE') say = 'A strong grid sits exactly on the JPEG 8 / 16 px block lattice: every ' + lt.period_px.toFixed(2) + ' px at ' + lt.angle_deg.toFixed(1) + '\u00b0, in ' + lt.n_permutations + ' views and ' + lt.n_crops + ' quarters. Ordinary JPEG never did this on any clean test picture, but block-aligned content (pixel art, a UI grid, an upscaler) can. It is never counted as PATTERN.';
-    else if (v.verdict === 'WEAK') say = 'Something crossed the threshold (' + T.toFixed(2) + ') but it did not recur across 2+ views AND 2+ quarters' + (top ? ' (best: ' + top.period_px.toFixed(2) + ' px at ' + top.angle_deg.toFixed(1) + '\u00b0, ' + top.n_permutations + ' views, ' + top.n_crops + ' quarters)' : '') + '. A long repeat with few cycles per quarter can do this. Treat it as a maybe.';
+    else if (v.verdict === 'WEAK') say = M.weakSay(top, T, Math.floor(Math.min(state.img.W, state.img.H) / 2));
     else say = 'Nothing crossed the line. The strongest candidate reached a prominence of ' + v.max_candidate_prominence.toFixed(2) + ', and the threshold is ' + T.toFixed(2) + ' (1.25x the strongest thing found in 24 pictures known to be clean). This is "no repeating pattern this meter can see", not "clean": a mark that does not repeat inside one picture is invisible here (try Many images).';
     $('vSay').textContent = say;
+    var bg = M.blockGrid(perms, T), gs = M.gridSay(bg, v.verdict);
+    $('vGrid').textContent = gs; $('vGrid').hidden = !gs;
     $('vNums').textContent = 'threshold ' + T + ' / lattice ' + TL + ' | max candidate ' + v.max_candidate_prominence.toFixed(3) + (v.max_candidate_where ? ' (' + v.max_candidate_where[0] + ', ' + v.max_candidate_where[1] + ')' : '') + ' | max off-axis lattice ' + v.max_offaxis_lattice_prominence.toFixed(3) + ' | hits ' + v.n_hits + ', clusters ' + v.n_clusters + ' | labelled over T: grid ' + v.grid_peaks_ge_T + ', axis ' + v.axis_peaks_ge_T + ' | ' + state.img.W + ' x ' + state.img.H + ' px, ' + secs.toFixed(1) + ' s';
     var per = {};
     perms.forEach(function (p) { per[p.name] = [p.score.cand, p.score.lattice]; });
     $('verdict').dataset.json = JSON.stringify({ mode: 'one', verdict: v.verdict, W: state.img.W, H: state.img.H, decode: state.decodePath, dither: M.DITHER_KIND, fnv: fnv1a(state.img.rgb),
       max_candidate_prominence: v.max_candidate_prominence, max_candidate_where: v.max_candidate_where, max_offaxis_lattice_prominence: v.max_offaxis_lattice_prominence,
       n_hits: v.n_hits, n_clusters: v.n_clusters, lattice_offaxis_ge_T: v.lattice_offaxis_ge_T, grid_peaks_ge_T: v.grid_peaks_ge_T, axis_peaks_ge_T: v.axis_peaks_ge_T,
-      clusters: v.clusters.slice(0, 3).map(pick), lattice_clusters: v.lattice_clusters.slice(0, 3).map(pick), perm: per });
+      clusters: v.clusters.slice(0, 3).map(pick), lattice_clusters: v.lattice_clusters.slice(0, 3).map(pick), perm: per,
+      block_grid: bg, reduced: state.img.reduced || null, cap: +$('cap').value, say: say, grid_say: gs });
     status('Done. ' + M.PERMS.length + ' views in ' + secs.toFixed(1) + ' s, all on this device.');
     progress(null);
     runExtras();
@@ -389,7 +401,7 @@
     if (dv.warn) say += ' WARNING: these pictures share most of their content (similarity ' + dv.rho_res.toFixed(2) + ' / ' + dv.rho_raw.toFixed(2) + '), so anything that lines up could just be that content.';
     var nk = Object.keys(notes || {});
     if (nk.length) say += ' ' + nk.map(function (t) { return '(' + notes[t] + ' picture' + (notes[t] === 1 ? '' : 's') + ') ' + t; }).join(' ');
-    $('vWord').textContent = word; $('vSay').textContent = say;
+    $('vWord').textContent = word; $('vSay').textContent = say; $('vGrid').hidden = true; $('vGrid').textContent = '';
     $('verdict').dataset.json = JSON.stringify({ mode: 'many', verdict: ev.verdict, N: ev.N, W: ev.W, H: ev.H, n_anch: ev.n_anch, n_grid: ev.n_grid, n_shared: ev.n_shared,
       n_grid_anchored: ev.n_grid_anchored, cstar: ev.cstar, tests: ev.tests, counts: ev.counts, rho_res: dv.rho_res, rho_raw: dv.rho_raw, warn: dv.warn,
       top_bins: ev.bins.slice(0, 10), shift_kind: M.DITHER_KIND });
