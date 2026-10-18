@@ -4,7 +4,8 @@
  * anywhere (no fetch, no XHR, no beacons, no imports: pure math on arrays it is handed).
  *
  * A port of two validated Python tools in the FABLEALIA repo (same math, same frozen thresholds):
- *   tools/hidden-pattern-scan.py v1.2 (md5 814e7ab8 at freeze) -- ONE image: 69 permutations x (full + 4 crops),
+ *   tools/hidden-pattern-scan.py v1.3 (the meter math is v1.2's, md5 814e7ab8 at freeze; v1.3 = Oct 17 2026: the integer
+ *       resize rule + the block_grid report, no verdict change) -- ONE image: 69 permutations x (full + 4 crops),
  *       windowed FFT, prominence = S / max(1, ray median, ring median, Nyquist-line median), labels, clusters,
  *       PATTERN > LATTICE > WEAK > CLEAN. T = 20.77, T_LATTICE = 23.8375 (frozen from 24 null images x 1.25).
  *   tools/model-mark-scan.py v1.1 (md5 e8db7960) -- MANY images of one size: phase coherence of the high-pass
@@ -26,13 +27,24 @@
  *      the same PCG64 as np.random.default_rng(1729).integers(0, H) / (0, W), numpy's scalar Lemire uint32 path:
  *      the Python's offsets exactly (opts.shifts still overrides; mulberry32 only without BigInt).
  *   D5 model-mark's per-bin unit-phase sums are accumulated in float32 (memory); C differs by ~1e-7.
- *   D6 images over the size cap are box-averaged down (the Python caps at 4096 px; the page defaults to 2048).
+ *   D6 (CLOSED Oct 17 2026) the size cap: the page and the Python use ONE rule, bit for bit (app.js intReduceRGB =
+ *      hidden-pattern-scan.py int_reduce). Long side <= cap (page default 4096 = the Python's --max-side default): full
+ *      size, untouched. Above it: k = ceil(long side / cap), W and H cropped DOWN to multiples of k (right/bottom
+ *      remainder dropped), each channel = (sum of the k x k uint8 block + k*k/2 floored) / (k*k) floored. An INTEGER k
+ *      keeps the JPEG/WebP block lattice in place (f, a multiple of 1/8 cycles/px, becomes k*f mod 1, still a multiple
+ *      of 1/8), so block-grid peaks keep their jpeg-grid label. Before this the page area-averaged by a NON-integer
+ *      factor (2048/2304 on a Nano Banana 2 picture), the 45 deg block peak moved from 5.657 to 5.028 px, off the
+ *      lattice, and the page said WEAK where the Python said CLEAN (Experiments/hidden-pattern-2026-10-01/fix-2026-10-17/).
  *   D8 (Oct 14 2026, wave 4) a bin and its Hermitian mirror on the fy = -1/2 row tie EXACTLY here (one packed FFT) and
  *      by rounding noise in numpy; when both sit in one 5 x 5 window numpy keeps one of them as a local max and so
  *      does this file (the lower column index). Which one numpy keeps is rounding luck, and the two can carry different
  *      prominences. Such a pair sits within 1.5 bins of the (0, 1/2) or (1/2, 1/2) lattice point, so it is LABELLED
  *      (jpeg-grid, on an axis or a Nyquist line), not a candidate and not an off-axis lattice peak: no score or verdict
  *      depends on the choice (bar a refinement landing exactly on the 1.5-bin edge). Receipt: page-test-w4/.
+ *      The block-grid report (blockGrid, Oct 17 2026) DOES see it: its count can differ from the Python at a lattice point
+ *      with a 1/2 component (alpha-hidden, (1/2,1/2): numpy kept the 45.0 deg twin, prom 10.82, this file the 134.9 deg
+ *      twin, 28.91; receipts fix-2026-10-17/receipts/diag-alpha-hidden-d8.txt). Wording only; the comparator allows it there
+ *      and nowhere else.
  *   D7 decoding (decode.js, wave 4): PNGs are decoded by our own PNG reader (DecompressionStream + unfilter), byte for
  *      byte what PIL's convert("RGB") gives, colour under transparent pixels included. Other formats go through the
  *      browser (no colour management requested, EXIF rotation off, undone by hand where the engine ignores that); a
@@ -864,13 +876,18 @@
       var R = regs[r], sub = trimRegion(m, img.W, R[1], R[2], R[3], R[4]), qs = trimRegion(qn, img.W, R[1], R[2], R[3], R[4]);
       var keep = !!opts.keepSpectrum && R[0] === 'full';
       var res = analyze(sub.a, qs.a, sub.h, sub.w, keep);
-      var cands = [], labelled = [];
+      var cands = [], labelled = [], grid = [];
       for (var k = 0; k < res.peaks.length; k++) {
         var p = res.peaks[k];
         if (p.label === 'candidate') cands.push([p.period_px, p.angle_deg, p.prominence]);
         else labelled.push([p.label, p.period_px, p.angle_deg, p.prominence, p.label_why, p.lattice_offaxis]);
+        // reporting only (blockGrid; never read by decide): block-lattice jpeg-grid peaks + their snapped point
+        if (p.label === 'jpeg-grid' && p.label_why.indexOf('block-lattice') === 0) {
+          var lp = latticePoint(p.fx, p.fy, sub.h, sub.w);
+          if (lp) grid.push([p.period_px, p.angle_deg, p.prominence, Math.abs(lp[1]) / lp[0], Math.abs(lp[2]) / lp[0]]);
+        }
       }
-      out.regions[R[0]] = { shape: [sub.h, sub.w], flat: res.flat, qfloor: res.qfloor, cands: cands, labelled: labelled,
+      out.regions[R[0]] = { shape: [sub.h, sub.w], flat: res.flat, qfloor: res.qfloor, cands: cands, labelled: labelled, grid: grid,
         top: res.peaks.slice(0, 8).map(function (p) { return { period_px: p.period_px, angle_deg: p.angle_deg, prominence: p.prominence, label: p.label, ix: p.ix, iy: p.iy }; }) };
       if (keep) fullRes = { res: res, h: sub.h, w: sub.w, map: sub.a };
     }
@@ -964,6 +981,52 @@
       max_candidate_prominence: bestC, max_candidate_where: bestCW, axis_peaks_ge_T: axisGe, grid_peaks_ge_T: gridGe,
       lattice_offaxis_ge_T: lat.length, lattice_clusters: lcl.slice(0, 10), n_lattice_clusters: lcl.length,
       max_offaxis_lattice_prominence: bestL, max_offaxis_lattice_where: bestLW };
+  }
+
+  // python block_grid(scan, T) (v1.3 FIX 2, reporting only; the verdict never reads it): the labelled block-lattice
+  // jpeg-grid peaks with prominence >= T over all permutations and regions.
+  function blockGrid(perms, T) {
+    if (T === undefined || T === null) T = T_FROZEN;
+    var n = 0, views = {}, best = null, pts = {}, per = {};
+    perms.forEach(function (p) {
+      Object.keys(p.regions).forEach(function (rn) {
+        (p.regions[rn].grid || []).forEach(function (g) {
+          if (g[2] >= T) {
+            n++; views[p.name] = 1; pts[g[3] + ',' + g[4]] = [g[3], g[4]];
+            var key = p.name + '/' + rn + '/' + g[3] + ',' + g[4]; per[key] = (per[key] || 0) + 1;
+            if (!best || g[2] > best.prominence) best = { period_px: g[0], angle_deg: g[1], prominence: g[2], view: p.name };
+          }
+        });
+      });
+    });
+    var lp = Object.keys(pts).map(function (k) { return pts[k]; }).sort(function (a, b) { return (a[0] - b[0]) || (a[1] - b[1]); });
+    return { n_peaks_ge_T: n, n_views: Object.keys(views).length, strongest: best, lattice_points: lp, per_view_region_point: per };
+  }
+
+  // ------------------------------------------------------------------------------------------------ words (reporting only)
+  // The verdict box's extra sentences (Oct 17 2026, fixes 2 + 3). They live here, not in app.js, so the test harness can
+  // call them on made-up inputs (page_vs_cli.py checks them against the CLI's block_grid_line / weak_why). Never read by
+  // decide(). DRAFT COPY.
+  // gridSay = python block_grid_line: shown only when the block-lattice peaks clear T in 2+ views, worded by the verdict.
+  function gridSay(bg, verdict) {
+    if (!bg || !(bg.n_views >= 2) || !bg.strongest) return '';
+    var on8 = bg.lattice_points.every(function (q) { return Math.abs(q[0] * 8 - Math.round(q[0] * 8)) < 1e-9 && Math.abs(q[1] * 8 - Math.round(q[1] * 8)) < 1e-9; });
+    var st = bg.strongest;
+    var harm = Math.abs(st.period_px - 8) > 0.05 && Math.abs(st.period_px - 16) > 0.05 ? '; a block grid also repeats at its harmonics, like 4 and 2 px' : '';
+    var head = 'Also, a strong grid sits on the ' + (on8 ? '8 px' : '8 / 16 px') + ' block lattice. ' + bg.n_peaks_ge_T + ' peak' + (bg.n_peaks_ge_T === 1 ? '' : 's') + ' cleared the threshold in ' + bg.n_views + ' of the 69 views (strongest: every ' + st.period_px.toFixed(2) + ' px at ' + st.angle_deg.toFixed(1) + '°' + harm + ').';
+    if (verdict === 'PATTERN') return head + ' With a repeating pattern found, these may be harmonics of that repeat landing on the lattice, not compression. They are reported here and are not part of the verdict.';
+    if (verdict === 'LATTICE') return head + ' That count includes the off-axis lattice grid named above and the on-axis grid lines that compression alone also makes.';
+    return head + ' That grid is the cross of dots you can see in the spectrum and the lattice in the autocorrelation. It usually comes from JPEG or WebP compression, but an image generator\'s own 8 px decoder grid looks the same. Many images cannot tell them apart either: that test is blind on this grid, so anything hidden on it would show in neither test. This meter never counts that grid as a hidden pattern.';
+  }
+  // weakSay = python weak_why: what actually failed, from the top cluster. qs = the quarters' short side (floor(min(W, H) / 2)).
+  function weakSay(top, T, qs) {
+    if (!top) return 'Something crossed the threshold (' + T.toFixed(2) + '), but it did not show up in at least 2 views and at least 2 of the 4 quarters, which is what it takes to count. Treat it as a maybe.';
+    var nv = top.n_permutations, nq = top.n_crops, parts = [];
+    var s = 'Something crossed the threshold (' + T.toFixed(2) + '): a repeat every ' + top.period_px.toFixed(2) + ' px at ' + top.angle_deg.toFixed(1) + '° (prominence ' + top.max_prominence.toFixed(2) + '), seen in ' + nv + ' of the 69 views and ' + nq + ' of the 4 quarters. To count, it has to show up in at least 2 views and at least 2 quarters.';
+    if (nq < 2) parts.push(' It reached the bar in fewer than 2 quarters. Each quarter has a quarter of the pixels, so a real but faint repeat scores lower there (often about half) and can miss the bar; a one-off feature in one spot does this too.');
+    if (nv < 2) parts.push(' It reached the bar in only one view, so nothing else backs it up.');
+    if (qs && top.period_px > qs / 4) parts.push(' It is also a long repeat for this picture (' + top.period_px.toFixed(1) + ' px, more than a quarter of a quarter\'s short side), so each quarter holds only a few cycles of it.');
+    return s + parts.join('') + ' Treat it as a maybe.';
   }
 
   // ------------------------------------------------------------------------------------------------ display helpers
@@ -1152,11 +1215,11 @@
   };
 
   var api = {
-    VERSION: 'meter.js 1.1 (port of hidden-pattern-scan v1.2 + model-mark-scan v1.1; numpy PCG64 draws)',
+    VERSION: 'meter.js 1.2 (port of hidden-pattern-scan v1.3 + model-mark-scan v1.1; numpy PCG64 draws)',
     DITHER_KIND: DITHER_KIND, PCG64: HAS_BIGINT ? PCG64 : null,
     T_FROZEN: T_FROZEN, T_LATTICE_FROZEN: T_LATTICE_FROZEN, PERMS: PERMS, N_PERMUTATIONS: PERMS.length,
     fft2: fft2, ifft2: ifft2, fftInPlace: fftInPlace, computePerm: computePerm, quantDither: quantDither,
-    makeRegions: makeRegions, analyze: analyze, scanPerm: scanPerm, permScore: permScore, decide: decide,
+    makeRegions: makeRegions, analyze: analyze, scanPerm: scanPerm, permScore: permScore, decide: decide, blockGrid: blockGrid, gridSay: gridSay, weakSay: weakSay,
     geometry: geometry, stretchToU8: stretchToU8, shiftedLog: shiftedLog, autocorr: autocorr,
     Coh: Coh, CH_ALL: CH_ALL, gaussBlur: gaussBlur, blur13: blur13, roundHalfEven: roundHalfEven, smoothSize: smoothSize
   };
