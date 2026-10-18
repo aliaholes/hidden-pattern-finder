@@ -173,6 +173,7 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-one" aria-selected="true" aria-controls="one">One image</button>
       <button type="button" role="tab" id="tab-many" aria-selected="false" aria-controls="many">Many images</button>
+      <button type="button" role="tab" id="tab-fp" aria-selected="false" aria-controls="fp">Fingerprint</button>
     </div>
 
     <div id="one" role="tabpanel" aria-labelledby="tab-one">
@@ -210,9 +211,43 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
       <div class="opts"><button type="button" class="btn go" id="runMany" disabled>Run the set</button><span id="manyInfo"></span><span id="ctlInfo"></span><button type="button" class="btn" id="clearCtl" hidden>Clear control</button></div>
     </div>
 
+    <div id="fp" role="tabpanel" aria-labelledby="tab-fp" hidden>
+      <label class="drop" id="fpDropA">
+        <input type="file" id="fpFileA" accept="image/*" multiple>
+        <span class="big">Drop a set</span>
+        <span class="small">Many pictures from one source (one model, one camera): files or a whole folder. Any sizes: each is cut to its centre 512 x 512 px, never resized. Pictures under 512 px are skipped. 200+ is fine.</span>
+      </label>
+      <div class="opts"><label class="btn" style="display:inline-flex;align-items:center">Pick a folder<input type="file" id="fpDirA" webkitdirectory multiple hidden></label><span id="fpInfoA"></span></div>
+      <label class="drop ctl" id="fpDropB">
+        <input type="file" id="fpFileB" accept="image/*" multiple>
+        <span class="big" style="font-size:clamp(22px,5vw,36px)">Control set (optional)</span>
+        <span class="small">Pictures from a different source, ideally the same format (PNG vs PNG, same JPEG quality) and similar content. You get a difference view next to the two fingerprints.</span>
+      </label>
+      <div class="opts"><label class="btn" style="display:inline-flex;align-items:center">Pick a folder<input type="file" id="fpDirB" webkitdirectory multiple hidden></label><span id="fpInfoB"></span><button type="button" class="btn" id="fpClearB" hidden>Clear control</button></div>
+      <div class="opts"><button type="button" class="btn go" id="fpRun" disabled>Make the fingerprint</button></div>
+    </div>
+
     <p class="status" id="status" aria-live="polite"></p>
     <div class="bar" id="bar" hidden><i></i></div>
     <div class="src" id="src" hidden><canvas id="srcCanvas"></canvas><p id="srcInfo"></p></div>
+  </section>
+
+  <section class="panel" id="fpOut" hidden>
+    <h2 style="margin:0">Fingerprint</h2>
+    <p class="legend" style="margin-top:6px" id="fpSummary"></p>
+    <div class="pair" id="fpViews"></div>
+    <div class="pair">
+      <figure><canvas id="fpRadial" width="560" height="300" style="width:100%;background:#000"></canvas><figcaption class="legend">Radial profile: mean log power at each distance from the centre (low to high frequency). Bumps = energy at a preferred scale.</figcaption></figure>
+      <figure><canvas id="fpAzim" width="560" height="300" style="width:100%;background:#000"></canvas><figcaption class="legend">Azimuthal profile: mean log power by direction (outer band, 1/8 to 1/2 of the spectrum). Spikes = stripes at a preferred angle (0 = vertical stripes).</figcaption></figure>
+    </div>
+    <div class="scroll"><table class="mtable" id="fpPeaks"></table></div>
+    <h3 style="margin-top:18px">What am I looking at?</h3>
+    <ul class="facts" style="font-size:13px;line-height:1.5">
+      <li><b>A fingerprint</b> is the average spectrum of many pictures' fine noise (each picture minus a blurred copy). Content averages out; whatever the camera or generator adds the same way every time stays. Upsamplers and image decoders often leave a lattice of dots, as Corvi et al. (2023) showed for diffusion models.</li>
+      <li><b>How it's computed:</b> green channel, centre 512 x 512 crop (offset aligned to 8 px, no resizing), residual = crop minus a Gaussian blur (sigma 1.5 px, applied exactly in the frequency domain), 2-D FFT, power averaged over the set, shown as log power. The bright cross through the centre is the picture edges and normal horizontal/vertical structure, not a mark.</li>
+      <li><b>Confounds.</b> Content (the same scene or style in every picture shows up too), format (JPEG adds an 8 px grid, PNG doesn't), resizing (moves or erases peaks), and re-encoding: social sites recompress and resize, which usually wipes these traces. Compare like with like: same format, size and kind of content.</li>
+      <li><b>Suggestive, not proof.</b> A different-looking fingerprint means the pictures were made differently. It doesn't say by what, and it isn't a watermark reading.</li>
+    </ul>
   </section>
 
   <section class="panel" id="facts" hidden>
@@ -328,5 +363,7 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
 <script src="meta.js"></script>
 <script src="decode.js"></script>
 <script src="app.js"></script>
+<script src="fingerprint.js"></script>
+<script src="fpui.js"></script>
 </body>
 </html>

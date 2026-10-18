@@ -15,10 +15,14 @@
   function tab(which) {
     $('tab-one').setAttribute('aria-selected', which === 'one');
     $('tab-many').setAttribute('aria-selected', which === 'many');
-    $('one').hidden = which !== 'one'; $('many').hidden = which !== 'many';
+    $('tab-fp').setAttribute('aria-selected', which === 'fp');
+    $('one').hidden = which !== 'one'; $('many').hidden = which !== 'many'; $('fp').hidden = which !== 'fp';
+    ['facts', 'verdict', 'results', 'multi', 'src'].forEach(function (id) { if (which === 'fp' && $(id)) $(id).hidden = true; });
+    if ($('fpOut')) $('fpOut').hidden = which !== 'fp' || !$('fpOut').dataset.ready;
   }
   $('tab-one').onclick = function () { tab('one'); };
   $('tab-many').onclick = function () { tab('many'); };
+  $('tab-fp').onclick = function () { tab('fp'); };
 
   function status(msg, isErr) { var s = $('status'); s.textContent = msg; s.className = 'status' + (isErr ? ' err' : ''); }
   function progress(f) { var b = $('bar'); b.hidden = f == null; if (f != null) b.firstChild.style.width = Math.round(f * 100) + '%'; }

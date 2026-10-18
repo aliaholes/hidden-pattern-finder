@@ -75,3 +75,9 @@ Also:
 - Screenshots: not committed (12 MB). They can be regenerated with `tools/harness/shots.js`, or attached to the PR.
 
 - SynthID investigation scripts (fetch_nb2.py, fetch_commons.py, banana100_pages.py, chain_fft.py, synthid_analyze.js). Result: no detection, see RESULTS.md.
+
+### Fingerprint tab (averaged noise-residual spectra)
+- New files: `fingerprint.js` (math), `fpworker.js` (streaming worker) and `fpui.js` (UI). `index.html` and `app.js` gain the tab; `meter.js` and `worker.js` are unchanged.
+- The JS spectra match the Python reference (`fp_lists.py`) to float32: Pearson r = 1.0000 and max |Δ ln| = 0 on NB Pro step-1 PNGs (21), NB2-via-X JPEGs (59) and SD-marked PNGs (160). For scale, two *different* sets correlate at r ≈ 0.93 (the shared 1/f fall-off).
+- 21 vs 150 images: 14 s. 160 vs 161: 5 s. Headless Chromium shows no console errors and no external requests. The existing `shots.js` run and `smoke-coh.js` still pass.
+- Display only: nothing removes, subtracts or perturbs a pattern.

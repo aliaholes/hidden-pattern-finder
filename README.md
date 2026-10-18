@@ -125,3 +125,25 @@ python3 -m http.server 8765 & node tools/harness/shots.js   # headless Chromium:
 
 
 > SynthID: tested on public Nano Banana data. No detection; the data was too small or stripped. See RESULTS.md.
+
+## Fingerprint tab
+
+Drop a set of images (files or a folder), plus an optional control set. Each picture's centre 512 × 512 px is taken
+(never resized; offsets aligned to 8 px; pictures under 512 px are skipped). The page then computes the green-channel
+noise residual: the crop minus a Gaussian blur with sigma 1.5, applied exactly in the frequency domain. It averages the
+residuals' power spectra over the set.
+
+You get:
+- the log spectrum of the set and of the control
+- a set / control log-ratio view
+- the residual autocorrelation
+- radial and azimuthal profiles
+- a table of peaks with period (px) and angle (the axis cross is never ranked)
+
+Work is streamed to a small worker pool, one file in flight per worker, with a progress bar. 300+ images run in well
+under a minute. Everything stays offline. This follows Marra et al. 2019 and Corvi et al. 2023, and it is a display
+only. Content, format (JPEG grid), resizing and social-site re-encoding all change the fingerprint. A difference is
+suggestive, not proof, and it is not a watermark reading.
+
+Check: `tools/harness/fp_lists.py` (Python reference) plus `tools/harness/fp_shots.js` (headless run, screenshots,
+JS-vs-Python correlation).
