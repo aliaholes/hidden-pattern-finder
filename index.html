@@ -57,7 +57,8 @@ h1,h2,h3,p{margin:0}
 .drop .small{font:400 13px/1.4 var(--mono);color:var(--ash);max-width:56ch}
 .drop input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .opts{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-top:12px;font-size:13px;color:var(--ash)}
-.opts select{font:400 14px/1.2 var(--mono);background:var(--ink);color:var(--bone);border:2px solid var(--blood);padding:8px 10px;border-radius:0;min-height:40px}
+.opts label{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;max-width:100%}
+.opts select{max-width:100%;font:400 14px/1.2 var(--mono);background:var(--ink);color:var(--bone);border:2px solid var(--blood);padding:8px 10px;border-radius:0;min-height:40px}
 .status{margin-top:12px;font-size:13px;color:var(--ash);min-height:1.5em}
 .bar{height:6px;background:#2a1414;margin-top:8px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:var(--signal);transition:width .2s}
@@ -178,9 +179,9 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
       <div class="opts">
         <label>Analysis size
           <select id="cap">
-            <option value="1024">1024 px (quick)</option>
-            <option value="2048" selected>2048 px (default)</option>
-            <option value="4096">4096 px (slow, uses a lot of memory)</option>
+            <option value="4096" selected>Full size up to 4096 px, bigger shrunk by a whole number (default)</option>
+            <option value="2048">Faster: shrink by a whole number above 2048 px</option>
+            <option value="1024">Quick: shrink by a whole number above 1024 px</option>
           </select>
         </label>
         <span id="cores"></span>
@@ -206,6 +207,7 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
     <p class="kick" id="vKick"></p>
     <p class="word" id="vWord"></p>
     <p class="say" id="vSay"></p>
+    <p class="say" id="vGrid" hidden></p>
     <p class="nums" id="vNums"></p>
   </section>
 
