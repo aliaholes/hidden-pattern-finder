@@ -147,3 +147,8 @@ suggestive, not proof, and it is not a watermark reading.
 
 Check: `tools/harness/fp_lists.py` (Python reference) plus `tools/harness/fp_shots.js` (headless run, screenshots,
 JS-vs-Python correlation).
+
+> reverse-SynthID check: on its public dataset (reverse-SynthID by Alosh Denny, github.com/aloshdenny/reverse-SynthID),
+> Many images finds frequencies that replicate across Nano Banana Pro and Gemini 3.1 images and not in camera, DALL·E or
+> synthetic controls. That is consistent with a fixed phase-locked component; it is not proof that it is SynthID.
+> See RESULTS.md.

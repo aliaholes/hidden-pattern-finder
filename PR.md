@@ -81,3 +81,7 @@ Also:
 - The JS spectra match the Python reference (`fp_lists.py`) to float32: Pearson r = 1.0000 and max |Δ ln| = 0 on NB Pro step-1 PNGs (21), NB2-via-X JPEGs (59) and SD-marked PNGs (160). For scale, two *different* sets correlate at r ≈ 0.93 (the shared 1/f fall-off).
 - 21 vs 150 images: 14 s. 160 vs 161: 5 s. Headless Chromium shows no console errors and no external requests. The existing `shots.js` run and `smoke-coh.js` still pass.
 - Display only: nothing removes, subtracts or perturbs a pattern.
+
+### reverse-SynthID detection check (credit: reverse-SynthID by Alosh Denny, github.com/aloshdenny/reverse-SynthID)
+- `tools/harness/prep_rsid.py` (same-size sets plus matched controls) and `tools/harness/coh_np.py` (numpy port of Many images; reproduces RESULTS.md counts exactly), plus a parameterized `fp_shots.js`.
+- Results are in RESULTS.md, with counts and coarse locations only. Its removal/bypass code was not used, and its carrier tables are not copied. No detector changes were needed: the tool finds the replicable bins, and the grid-band ones are already reported under the stricter grid floor.

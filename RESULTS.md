@@ -66,3 +66,82 @@ Photos: 160 Unsplash-licensed photos from Lorem Picsum, 512 x 512 (`tools/harnes
 - Visual: `shots/synthid-chain-spectrum.png` (not committed).
 
 **Conclusion.** With this data the finder does **not** detect SynthID. The NB2 groups are too small to test. The Banana100 chains show a weak grid-aligned 32 px artifact, nothing that matches published reverse-SynthID carrier claims, and no diagonal pattern. Confidence that the tool *cannot* detect SynthID is low: no group had 30+ native, unmodified images at one size.
+
+## reverse-SynthID: an independent check of its detection claims (Oct 2026)
+
+Method and data credit: **reverse-SynthID by Alosh Denny, github.com/aloshdenny/reverse-SynthID**. We studied only its
+detection side. None of its removal or bypass code was used, and its carrier tables are not reproduced here.
+
+**What it claims (README, commit b110836).**
+- SynthID carriers sit at resolution-dependent bins with a fixed phase, and the green channel is strongest.
+- At 1024², the claim comes from 100 black + 100 white references. Its top carriers are low-frequency diagonals; we
+  give only coarse bands here: 32 px to >100 px, at about 25–45°.
+- At 1536 × 2816, the claim comes from 88 content images. Its top "carrier" is on the Nyquist row at a quarter of the
+  width: < 3 px at about 60°.
+- It reports a detector with "90 % accuracy". The code (`robust_extractor.detect_array`) resizes to 512, takes the
+  grayscale FFT phase at the listed carriers and compares it with stored reference phases. Its docstring says it was
+  calibrated on 291 watermarked vs **16** non-watermarked images, a very small negative set.
+
+**Data.** The project's public Hugging Face dataset `aoxo/reverse-synthid`: 997 files downloaded for local research
+only, not redistributed, no licence stated on the card. All PNGs; no C2PA or other provenance metadata. Same-size
+groups:
+- legacy black and white sets: 100 + 100 at 1024², and `gemini_random` 88 at 2816 × 1536
+- `nano-banana-pro-preview` and `gemini-3.1-flash-image-preview`: about 10 images per solid colour at 1024²
+  (pooled: 48 and 59), plus 99 and 98 "diverse" content images at 1408 × 768
+
+Controls:
+- 100 synthetic blank PNGs (flat level + Gaussian noise, same PNG encoder)
+- DALL·E 3 solids (60) and DALL·E 3 content crops (33), from the same dataset and in the same PNG format
+- Wikimedia Commons camera crops at each size (120)
+
+**Many-images test** (numpy port `tools/harness/coh_np.py`; it reproduces this file's counts on the harness sets
+exactly). Off-grid anchored / grid-strict bins; split-half = top-200-bin overlap between random halves of 10 image
+groups, 20 splits, vs chance K²/M.
+
+| Set | N | Off-grid | Grid | vs control (off/grid) | Split-half (chance ≈ 0.02–0.08) |
+|---|---|---|---|---|---|
+| NB Pro diverse 1408×768 | 99 | 19 | 202 | Commons 14/57, DALL·E 4/9 | 5.95 (p ≈ 3e-10) |
+| Gemini 3.1 diverse 1408×768 | 98 | 16 | 101 | Commons 11/34, DALL·E 3/14 | 5.05 (p ≈ 3e-8) |
+| gemini_random 2816×1536 | 88 | 17 | 293 | Commons 13/133 | 6.05 (p ≈ 6e-14) |
+| legacy white 1024² | 100 | 419 | 1885 | synthetic 32/770 | 72 |
+| legacy black 1024² | 100 | 364,640 | 35,930 | synthetic 313,375/28,314 | 53 (near-duplicates, see below) |
+| NB Pro solids 1024² (6 colours) | 48 | 0 | 55 | synthetic 0/9 | 0.05 (chance) |
+| Gemini 3.1 solids 1024² | 59 | 5 | 57 | synthetic 0/4 | 1.6 (chance level) |
+| Controls: Commons, DALL·E, synthetic | 33–120 | **0** | 0–14 | 0/0–7 | 0–0.1 |
+
+Cross-set overlap of top bins (same size):
+- NB Pro vs Gemini 3.1 diverse: 8 / 200 (chance 0.08, p ≈ 3e-14). NB Pro vs DALL·E: 0.
+- Legacy black vs white: 34 / 200 (p ≈ 2e-78). This survives restricting black to its non-palette RGBA files
+  (18 / 200, p ≈ 1e-36).
+
+**Where.** Coarse locations only:
+- On the content sets, the off-grid bins are mostly 3–6 px at about 90° (horizontal stripes). The grid bins sit
+  mostly on the Nyquist row (< 3 px at about 90°).
+- On `gemini_random`, the bin at the Nyquist row × quarter-width is perfectly phase-locked (C = 1.00 over 88 images;
+  0.10 in the Commons control). It is the same coarse location as reverse-SynthID's 1536 × 2816 top carrier.
+- On the legacy white set, 2 of the 8 listed 1024² low-frequency positions (± sign) pass our threshold.
+- On the new-model solids, none pass.
+
+**Caveats.**
+- (1) The legacy black images are near-duplicates: the median pairwise residual correlation is 0.76, so nearly every
+  bin is "coherent" (median C 0.72). That set cannot separate a mark from duplication. The page's diversity check
+  flags exactly this.
+- (2) The legacy white files are mostly ImageMagick-processed palette PNGs; the cross-set overlap with non-palette
+  black files argues against a pure palette artifact.
+- (3) The strongest locations, Nyquist and quarter-band, are classic upsampling/decoder positions. Our grid band
+  scores them at a 100× stricter floor, and a phase-locked bin there does not distinguish a watermark from an
+  upsampler.
+- (4) The solid-colour sets for the new models have about 10 images per colour. Pooled across colours they show no
+  shared pattern (median pairwise residual correlation ≈ 0). That fits reverse-SynthID's own note that the mark adapts
+  to content or colour, but the sets are underpowered per colour.
+- (5) The averaged-magnitude Fingerprint view shows the Gemini black/white structure (fine lattice, autocorrelation
+  lattice) but nothing distinctive on the content sets. A phase-locked, low-amplitude mark is expected to be invisible
+  to magnitude averaging.
+
+**Conclusion.** Our blind test independently finds frequencies that replicate (split-half far above chance) in
+Google-model images and not in any camera, DALL·E or synthetic control, with some overlap between NB Pro and
+Gemini 3.1. This is consistent with reverse-SynthID's core claim of a fixed, phase-locked, resolution-specific
+component, and at 2816 × 1536 it coincides coarsely with its top location. It does not establish that the component
+is SynthID rather than a shared Google decoder/upsampler fingerprint, and we could not test the new-model solids
+with enough images. Confidence that a replicable fixed component exists in these Google images: high. Confidence that
+it is the SynthID watermark: low to moderate.
