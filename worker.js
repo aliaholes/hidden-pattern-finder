@@ -54,7 +54,7 @@ function runPerm(name, thumb) {
   }
   CACHE = { name: name, p: p, v: v, specFull: specFull };   // the last one, for a fast detail view
   var out = { name: p.name, family: p.family, score: p.score, regions: {} };
-  for (var rn in p.regions) { var r = p.regions[rn]; out.regions[rn] = { shape: r.shape, flat: r.flat, cands: r.cands, labelled: r.labelled, top: r.top }; }
+  for (var rn in p.regions) { var r = p.regions[rn]; out.regions[rn] = { shape: r.shape, flat: r.flat, cands: r.cands, labelled: r.labelled, grid: r.grid, top: r.top }; }
   var tr = [vt.data.buffer];
   out.thumb = pack(vt);
   if (spec) { out.spec = pack(spec); tr.push(spec.data.buffer); }
