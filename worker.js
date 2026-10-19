@@ -1,9 +1,9 @@
 /* worker.js -- runs meter.js off the main thread. No network: it only receives pixels from the page and posts numbers and
  * small pictures back. (importScripts loads meter.js from this same folder, once, at start.) */
 'use strict';
-importScripts('meter.js');
+importScripts('meter.js', 'wmdecode.js');
 var M = self.HPMeter;
-var IMG = null, DIMG = null, COH = null, CACHE = {};
+var IMG = null, DIMG = null, COHS = {}, CACHE = {};   // COHS.set, COHS.control (Oct 17 2026: set vs control)
 
 function boxDown(src, w, h, chans, maxSide) { // area-average down to fit maxSide; returns {data RGBA, w, h}
   var s = Math.min(1, maxSide / Math.max(w, h)), tw = Math.max(1, Math.round(w * s)), th = Math.max(1, Math.round(h * s));
@@ -128,14 +128,20 @@ self.onmessage = function (ev) {
       var d = runDetail(m.name, m.maxSide || 1200); d.msg.cmd = 'detail'; d.msg.id = m.id; self.postMessage(d.msg, d.transfer);
     } else if (m.cmd === 'extra') {
       var e = runExtra(m.kind, m.thumb || 220, m.maxSide || 1200); e.msg.cmd = 'extra'; e.msg.id = m.id; self.postMessage(e.msg, e.transfer);
+    } else if (m.cmd === 'wm') { // the DWT-DCT reader on the file's own pixels (never the downscaled copy)
+      self.postMessage({ cmd: 'wm', id: m.id, wm: self.HPWm.read(new Uint8Array(m.rgb), m.H, m.W) });
     } else if (m.cmd === 'coh-start') {
-      COH = new M.Coh(m.H, m.W, M.CH_ALL.slice());
+      // the control keeps only what cohCompare reads (lite: no shift sums, no similarity sums)
+      COHS[m.which || 'set'] = new M.Coh(m.H, m.W, M.CH_ALL.slice(), { lite: m.which === 'control' });
       self.postMessage({ cmd: 'coh-ready', id: m.id });
     } else if (m.cmd === 'coh-feed') {
-      COH.feed(new Uint8Array(m.rgb), m.W, m.H);
-      self.postMessage({ cmd: 'coh-fed', id: m.id, n: COH.N });
+      var C0 = COHS[m.which || 'set'];
+      C0.feed(new Uint8Array(m.rgb), m.W, m.H);
+      self.postMessage({ cmd: 'coh-fed', id: m.id, n: C0.N });
     } else if (m.cmd === 'coh-eval') {
-      var evr = COH.evaluate(0.01), H = COH.H, W = COH.W, Wh = evr.Wh;
+      var COH = COHS.set, CTL = COHS.control && COHS.control.N ? COHS.control : null;
+      var evr = COH.evaluate(0.01), H = COH.H, W = COH.W, Wh = evr.Wh, cmp = null;
+      if (CTL) cmp = M.cohCompare(COH, CTL, 0.01, evr);
       // the coherence picture: full spectrum (Hermitian mirror), fftshifted, log-ish; red = anchored, blue = grid
       // drawn straight at display size, keeping the strongest class per pixel (an isolated red bin must survive)
       var sc = Math.min(1, 1100 / Math.max(H, W)), PW = Math.max(1, Math.round(W * sc)), PH = Math.max(1, Math.round(H * sc));
@@ -156,10 +162,23 @@ self.onmessage = function (ev) {
         img[o + 3] = 255;
       }
       var pic = { data: img, w: PW, h: PH };
-      delete evr._Cmax; delete evr._cls;
-      evr.bins = evr.bins.slice(0, 40);
-      self.postMessage({ cmd: 'coh-result', id: m.id, ev: evr, pic: pack(pic) }, [pic.data.buffer]);
-      COH = null;
+      // the pattern made visible (display only): bins = anchored off-grid + grid past the strict floor, or with a
+      // control set big enough to test against, only the SET-ONLY bins. Pictures only, shrunk: no numbers leave here.
+      var mask, maskFrom = cmp && (!cmp.underpowered || cmp.n_set_only + cmp.n_set_only_grid > 0) ? 'control' : 'set';
+      if (maskFrom === 'control') mask = cmp._keep;
+      else { mask = new Uint8Array(evr._keep.length); for (var q = 0; q < mask.length; q++) mask[q] = evr._keep[q] | evr._keepG[q]; }
+      // shrunk for the screen: at most 512 px on the long side AND always at least 2x smaller than the set (fix, Oct 17
+      // 2026: a set of 512 x 512 or smaller used to be drawn at full size, a phase-correct copy of the counted pattern).
+      // A picture to look at, never a full-resolution copy.
+      var pp = COH.patternPictures(mask), mside = Math.max(1, Math.min(512, Math.floor(Math.max(W, H) / 2)));
+      var pm = boxDown(pp.mean, W, H, 4, mside), prb = boxDown(pp.rebuilt, W, H, 4, mside);
+      pp.mean = pp.rebuilt = null;
+      delete evr._Cmax; delete evr._cls; delete evr._keep; delete evr._keepG;
+      evr.bins = evr.bins.slice(0, 40); evr.grid_bins = evr.grid_bins.slice(0, 40);
+      if (cmp) { delete cmp._keep; cmp.bins = cmp.bins.slice(0, 40); cmp.grid_bins = cmp.grid_bins.slice(0, 40); }
+      self.postMessage({ cmd: 'coh-result', id: m.id, ev: evr, cmp: cmp, pic: pack(pic), pattern: { mean: pack(pm), rebuilt: pack(prb), n_bins: pp.n_bins, empty: pp.empty, from: maskFrom, shown_w: pm.w, shown_h: pm.h } },
+        [pic.data.buffer, pm.data.buffer, prb.data.buffer]);
+      COHS = {};
     }
   } catch (err) {
     self.postMessage({ cmd: 'error', id: m.id, error: String(err && err.message || err) });
