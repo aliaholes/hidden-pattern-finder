@@ -1060,6 +1060,7 @@
   // ------------------------------------------------------------------------------------------------ MULTI-IMAGE: coherence
   var COEF = { R: [1, 0, 0], G: [0, 1, 0], B: [0, 0, 1], Y: [0.299, 0.587, 0.114], Cb: [-0.168736, -0.331264, 0.5], Cr: [0.5, -0.418688, -0.081312] };
   var CH_ALL = ['R', 'G', 'B', 'Y', 'Cb', 'Cr'];
+  var GRID_STRICT = 100; // grid bins (8 / 16 px lattice) need p 100x smaller than off-grid bins (Oct 17 2026)
   var COH_SIGMA = 1.5, COH_RING = 2.0, COH_EPS = 1e-6, DIV_WARN_RES = 0.5, DIV_WARN_RAW = 0.6;
   var GK = (function () { var r = Math.ceil(4 * COH_SIGMA), k = [], s = 0, i; for (i = -r; i <= r; i++) { var v = Math.exp(-0.5 * (i / COH_SIGMA) * (i / COH_SIGMA)); k.push(v); s += v; } return { r: r, k: k.map(function (v) { return v / s; }) }; })();
   function blur13(a, H, W) { // model-mark blur(): separable, reflect edges, same summation order
@@ -1084,8 +1085,12 @@
     this.N = 0; this.pcg = (HAS_BIGINT && PCG_SEEDS[sseed]) ? new PCG64(sseed) : null; this.rnd = mulberry32(sseed); this.shifts = opts.shifts || null;
     var nb = H * this.Wh, self = this;
     this.U = {}; this.S = {};
-    this.channels.forEach(function (c) { self.U[c] = { r: new Float32Array(nb), i: new Float32Array(nb) }; self.S[c] = { r: new Float32Array(nb), i: new Float32Array(nb) }; });
-    this.divS = { res: new Float64Array(3 * H * W), raw: new Float64Array(3 * H * W) };
+    // opts.lite (a CONTROL set, Oct 17 2026): only the unit-phasor sums U are kept; cohCompare reads nothing else from a
+    // control, so its shift sums S and its content-similarity sums are never allocated (about a third of the memory)
+    this.lite = !!opts.lite;
+    this.channels.forEach(function (c) { self.U[c] = { r: new Float32Array(nb), i: new Float32Array(nb) }; if (!self.lite) self.S[c] = { r: new Float32Array(nb), i: new Float32Array(nb) }; });
+    // float32 sums (Oct 17 2026): a 1536 x 2816 set fits; the similarity ratios still match the command line to 1e-6
+    this.divS = this.lite ? null : { res: new Float32Array(3 * H * W), raw: new Float32Array(3 * H * W) };
     this.divV = { res: 0, raw: 0 };
     this.zero = 0;
   }
@@ -1103,8 +1108,8 @@
       for (i = 0; i < n; i++) r[i] = p[i] - b[i];
       planes.push(r);
     }
-    // diversity
-    for (var key in { res: 1, raw: 1 }) {
+    // diversity (not for a lite control)
+    for (var key in (this.lite ? {} : { res: 1, raw: 1 })) {
       var src = key === 'res' ? planes : raws, vs = 0;
       for (c = 0; c < 3; c++) {
         var s = 0, s2 = 0, off = c * n, arr = src[c], acc = this.divS[key];
@@ -1139,13 +1144,14 @@
           if (mag <= COH_EPS) { self.zero++; continue; }
           var ur = gr / mag, ui = gi / mag, U = self.U[self.channels[k]], Sx = self.S[self.channels[k]];
           U.r[bi] += ur; U.i[bi] += ui;
-          Sx.r[bi] += ur * cr - ui * ci; Sx.i[bi] += ur * ci + ui * cr;
+          if (Sx) { Sx.r[bi] += ur * cr - ui * ci; Sx.i[bi] += ur * ci + ui * cr; }
         }
       }
     }
     this.N++;
   };
   Coh.prototype.diversity = function () {
+    if (this.lite) return null; // a lite control keeps no similarity sums
     var N = this.N, H = this.H, W = this.W, n = H * W, d = { N: N, independent_expectation: N ? 1 / Math.sqrt(N) : null };
     for (var key in { res: 1, raw: 1 }) {
       var vsingle = this.divV[key] / Math.max(N, 1), vm = 0, acc = this.divS[key];
@@ -1180,10 +1186,11 @@
         if (valid[i]) { nvalid++; if (grid[i]) ngridvalid++; }
       }
     }
-    var nch = this.channels.length, tests = nch * nvalid, apt = alpha / tests;
-    var cstar = Math.sqrt(Math.log(1 / apt) / N);
-    var ev = { N: N, H: H, W: W, tests: tests, alpha: alpha, cstar: cstar, counts: {}, bins: [], grid_blind_fraction: ngridvalid / nvalid };
-    var anyA = new Uint8Array(nb), anyS = new Uint8Array(nb), anyG = new Uint8Array(nb), anyGA = new Uint8Array(nb);
+    var nch = this.channels.length, tests = nch * nvalid, apt = alpha / tests, aptG = apt / GRID_STRICT;
+    var cstar = Math.sqrt(Math.log(1 / apt) / N), cstarG = Math.sqrt(Math.log(1 / aptG) / N);
+    var ev = { N: N, H: H, W: W, tests: tests, alpha: alpha, cstar: cstar, cstar_grid: cstarG, grid_strict_factor: GRID_STRICT, counts: {}, counts_grid_strict: {}, bins: [], grid_bins: [], grid_blind_fraction: ngridvalid / nvalid };
+    var keep = new Uint8Array(nb), keepG = new Uint8Array(nb);
+    var anyA = new Uint8Array(nb), anyS = new Uint8Array(nb), anyG = new Uint8Array(nb), anyGA = new Uint8Array(nb), anyGS = new Uint8Array(nb);
     var Cmax = new Float32Array(nb), clsMax = new Uint8Array(nb);
     this.channels.forEach(function (ch) {
       var U = self.U[ch], S = self.S[ch], cnt = { anchored_offgrid: 0, shared_offgrid: 0, grid: 0, grid_anchored: 0, grid_shared: 0 };
@@ -1197,31 +1204,149 @@
         if (canon[i]) {
           if (cls === 1) { cnt.anchored_offgrid++; anyA[i] = 1; ev.bins.push({ ch: ch, fy: FY[i], fx: FX[i], C: C, Cs: Cs, period_px: 1 / Math.hypot(FY[i] / H, FX[i] / W), angle_deg: Math.atan2(FY[i] / H, FX[i] / W) * 180 / Math.PI }); }
           else if (cls === 2) { cnt.shared_offgrid++; anyS[i] = 1; }
-          else { cnt.grid++; anyG[i] = 1; if (sigs) cnt.grid_shared++; else { cnt.grid_anchored++; anyGA[i] = 1; } }
+          else {
+            cnt.grid++; anyG[i] = 1;
+            if (sigs) cnt.grid_shared++;
+            else {
+              cnt.grid_anchored++; anyGA[i] = 1;
+              // reported, not dropped (Oct 17 2026): a grid bin counts only past the STRICTER floor cstar_grid
+              if (Math.exp(-N * C * C) < aptG) { ev.counts_grid_strict[ch] = (ev.counts_grid_strict[ch] || 0) + 1; anyGS[i] = 1; ev.grid_bins.push({ ch: ch, fy: FY[i], fx: FX[i], C: C, Cs: Cs, period_px: 1 / Math.hypot(FY[i] / H, FX[i] / W), angle_deg: Math.atan2(FY[i] / H, FX[i] / W) * 180 / Math.PI }); }
+            }
+          }
         }
+        if (cls === 1) keep[i] = 1;
+        else if (cls === 3 && !sigs && Math.exp(-N * C * C) < aptG) keepG[i] = 1;
         if (cls === 1) clsMax[i] = 1; else if (cls === 3 && clsMax[i] !== 1) clsMax[i] = 3; else if (cls === 2 && !clsMax[i]) clsMax[i] = 2;
       }
       ev.counts[ch] = cnt;
     });
     function cnt1(a) { var s = 0; for (var k = 0; k < nb; k++) s += a[k]; return s; }
-    ev.n_anch = cnt1(anyA); ev.n_shared = cnt1(anyS); ev.n_grid = cnt1(anyG); ev.n_grid_anchored = cnt1(anyGA);
+    ev.n_anch = cnt1(anyA); ev.n_shared = cnt1(anyS); ev.n_grid = cnt1(anyG); ev.n_grid_anchored = cnt1(anyGA); ev.n_grid_strict = cnt1(anyGS);
+    ev.grid_bins.sort(function (a, b) { return b.C - a.C; });
+    ev._keep = keep; ev._keepG = keepG;
     ev.diversity = this.diversity();
     ev.underpowered = cstar >= 1.0;
     ev.n_min = Math.floor(Math.log(1 / apt)) + 1;
+    // the verdict string is model-mark-scan's own, unchanged (page vs command line parity); the stricter grid count is
+    // reported beside it, never folded into it
     ev.verdict = ev.n_anch > 0 ? 'ANCHORED-CARRIERS(' + ev.n_anch + ')' : (ev.n_grid > 0 ? 'GRID-ONLY' : 'NONE');
+    ev.grid_strict_verdict = ev.n_grid_strict > 0 ? 'GRID-ANCHORED(' + ev.n_grid_strict + ')' : 'NONE';
     ev.bins.sort(function (a, b) { return b.C - a.C; });
     ev._Cmax = Cmax; ev._cls = clsMax; ev.Wh = Wh;
     return ev;
   };
 
+  // ---------------------------------------------------------------- set vs control (Oct 17 2026)
+  // Two-sample test on the mean unit phasors: D = U_a / N_a - U_b / N_b. Each unit phasor has total variance <= 1, so
+  // under "same phase distribution in both sets" |D|^2 / (1/N_a + 1/N_b) has (at most, approximately) a unit
+  // exponential tail: p ~ exp(-z). A bin is SET-ONLY when it is anchored in the set (Rayleigh, as evaluate) AND differs
+  // from the control (Bonferroni over the same tests). Grid bins use the stricter GRID_STRICT floor on both tests.
+  // POWER (port, Oct 17 2026): even when the control has nothing at a bin (its mean phasor ~ 0), |D| is only about the
+  // set's own agreement C, so the test can flag a bin only when C > cstar_ctl = sqrt(ln(1 / p_bin) * (1/N_a + 1/N_b)).
+  // That floor is ALWAYS above the set's own floor, and with a small control it can pass 1 (then nothing can ever be
+  // flagged: underpowered). Every anchored set bin is therefore one of: set_only (flagged), same (strong enough to be
+  // tested, not different, AND the control is itself anchored there: Rayleigh on the control, exp(-N_b C_b^2) < the
+  // same floor), undecided (strong enough to be tested and not different, but the control does NOT line up there, so
+  // the test simply could not tell; fix, Oct 17 2026: these used to count as "same", and with a pure-noise control a
+  // bin just above cstar_ctl was called "same" in 40% of runs, review-lens5/power_sim.txt), or untestable (too faint
+  // for this control to tell either way). A small or noisy control must never read as "nothing beyond the control".
+  function cohCompare(A, B, alpha, ea) {
+    alpha = alpha || 0.01;
+    if (A.H !== B.H || A.W !== B.W) throw new Error('the control set is ' + B.W + ' x ' + B.H + ', the set is ' + A.W + ' x ' + A.H + ': they must be one size');
+    ea = ea || A.evaluate(alpha);
+    var H = A.H, W = A.W, Wh = A.Wh, nb = H * Wh, Na = A.N, Nb = B.N, apt = alpha / ea.tests, aptG = apt / GRID_STRICT;
+    var sy = H / 16, sx = W / 16, k2 = 1 / Na + 1 / Nb;
+    var L = Math.log(1 / apt), LG = Math.log(1 / aptG), cstarCtl = Math.sqrt(L * k2), cstarCtlG = Math.sqrt(LG * k2);
+    var out = { tests: ea.tests, alpha: alpha, Na: Na, Nb: Nb, bins: [], grid_bins: [], counts: {},
+      cstar_ctl: cstarCtl, cstar_ctl_grid: cstarCtlG, underpowered: cstarCtl >= 1,
+      nb_min: Na > L ? Math.floor(1 / (1 / L - 1 / Na)) + 1 : null };   // the smallest control that can flag anything off-grid
+    var keep = new Uint8Array(nb), cls = new Uint8Array(nb), clsG = new Uint8Array(nb);  // 4 set-only, 3 same, 2 undecided, 1 untestable
+    A.channels.forEach(function (ch) {
+      var Ua = A.U[ch], Ub = B.U[ch], Sa = A.S[ch], c = { set_only: 0, set_only_grid: 0, same: 0, undecided: 0, untestable: 0 };
+      if (!Ub) return;
+      for (var y = 0; y < H; y++) {
+        var fy = y <= Math.floor(H / 2) ? y : y - H;
+        for (var x = 0; x < Wh; x++) {
+          if (Math.sqrt(fy * fy + x * x) <= COH_RING) continue;
+          var i = y * Wh + x;
+          var ar = Ua.r[i] / Na, ai = Ua.i[i] / Na, br = Ub.r[i] / Nb, bi_ = Ub.i[i] / Nb;
+          var Ca = Math.hypot(ar, ai), Cb = Math.hypot(br, bi_), Cs = Math.hypot(Sa.r[i], Sa.i[i]) / Na;
+          var grid = Math.abs(fy - roundHalfEven(fy / sy) * sy) <= 1 + 1e-9 || Math.abs(x - roundHalfEven(x / sx) * sx) <= 1 + 1e-9;
+          var a_ = grid ? aptG : apt;
+          if (!(Math.exp(-Na * Ca * Ca) < a_) || Math.exp(-Na * Cs * Cs) < apt) continue; // anchored in the set, shift-dead
+          var canon = !((x === 0 || (W % 2 === 0 && x === W / 2)) && y > Math.floor(H / 2)), C3 = grid ? clsG : cls;
+          var z = ((ar - br) * (ar - br) + (ai - bi_) * (ai - bi_)) / k2;
+          if (!(Math.exp(-z) < a_)) {
+            var testable = Ca >= (grid ? cstarCtlG : cstarCtl), ctlAnch = Math.exp(-Nb * Cb * Cb) < a_;
+            var v = !testable ? 1 : ctlAnch ? 3 : 2;
+            if (v === 3) c.same++; else if (v === 2) c.undecided++; else c.untestable++;
+            if (canon && v > C3[i]) C3[i] = v;
+            continue;
+          }
+          keep[i] = 1;
+          if (!canon) continue;
+          C3[i] = 4;
+          var q = { ch: ch, fy: fy, fx: x, C: Ca, C_control: Cb, z: z, period_px: 1 / Math.hypot(fy / H, x / W), angle_deg: Math.atan2(fy / H, x / W) * 180 / Math.PI };
+          if (grid) { c.set_only_grid++; out.grid_bins.push(q); } else { c.set_only++; out.bins.push(q); }
+        }
+      }
+      out.counts[ch] = c;
+    });
+    function count(a, v) { var s = 0; for (var k = 0; k < nb; k++) if (a[k] === v) s++; return s; }
+    out.n_set_only = count(cls, 4); out.n_set_only_grid = count(clsG, 4);
+    out.n_same = count(cls, 3) + count(clsG, 3); out.n_undecided = count(cls, 2) + count(clsG, 2);
+    out.n_untestable = count(cls, 1) + count(clsG, 1);
+    out.bins.sort(function (a, b) { return b.z - a.z; }); out.grid_bins.sort(function (a, b) { return b.z - a.z; });
+    out._keep = keep;
+    return out;
+  }
+
+  // ---------------------------------------------------------------- the pattern, made visible (Oct 17 2026; port)
+  // DISPLAY ONLY. mean = the set's average high-pass residual (what a fixed additive mark survives as);
+  // rebuilt = that mean residual's own spectrum kept ONLY at the masked bins (+ Hermitian mirrors), inverse-FFT'd.
+  // Both come back as 8-bit RGBA at full size for the worker to SHRINK for the screen (worker.js: at most 512 px on
+  // the long side and always at least 2x smaller than the set, area average); the page never shows them at full
+  // resolution and never hands out their numbers.
+  // Memory (port): float32 planes, and the stretch samples the planes instead of copying them (was 3 x n doubles twice).
+  Coh.prototype.patternPictures = function (mask) {
+    if (this.lite) throw new Error('patternPictures needs a full (non-lite) set');
+    var H = this.H, W = this.W, Wh = this.Wh, n = H * W, N = Math.max(this.N, 1), acc = this.divS.res, c, i, y, x;
+    var mean = new Uint8ClampedArray(n * 4), rec = new Uint8ClampedArray(n * 4), planesM = [], planesR = [];
+    var re = new Float64Array(n), im = new Float64Array(n);
+    for (c = 0; c < 3; c++) {
+      for (i = 0; i < n; i++) { re[i] = acc[c * n + i] / N; im[i] = 0; }
+      planesM.push(Float32Array.from(re));
+      fft2(re, im, H, W);
+      for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        var yy = y, xx = x;
+        if (x >= Wh) { yy = (H - y) % H; xx = W - x; }
+        if (!mask || !mask[yy * Wh + xx]) { re[y * W + x] = 0; im[y * W + x] = 0; }
+      }
+      ifft2(re, im, H, W);
+      planesR.push(Float32Array.from(re));
+    }
+    re = im = null;
+    function stretch(planes, out) { // one symmetric scale for all three channels: +-p99.5 of |v| -> 0..255, mid grey = 0
+      var tot = 3 * n, step = Math.max(1, Math.floor(tot / 200000)), smp = [];
+      for (var k = 0; k < tot; k += step) smp.push(Math.abs(planes[(k / n) | 0][k % n]));
+      smp.sort(function (a, b) { return a - b; });
+      var s = smp[Math.min(smp.length - 1, Math.floor(0.995 * smp.length))] || 1e-12;
+      for (i = 0; i < n; i++) { for (c = 0; c < 3; c++) out[4 * i + c] = 128 + 127 * planes[c][i] / s; out[4 * i + 3] = 255; }
+      return s;
+    }
+    var sm = stretch(planesM, mean), sr = stretch(planesR, rec);
+    var nk = 0; if (mask) for (i = 0; i < mask.length; i++) nk += mask[i];
+    return { mean: mean, rebuilt: rec, H: H, W: W, n_bins: nk, empty: !nk, scale_ratio: sr / (sm || 1) };
+  };
+
   var api = {
-    VERSION: 'meter.js 1.2 (port of hidden-pattern-scan v1.3 + model-mark-scan v1.1; numpy PCG64 draws)',
+    VERSION: 'meter.js 1.3 (port of hidden-pattern-scan v1.3 + model-mark-scan v1.1; numpy PCG64 draws; + set-vs-control)',
     DITHER_KIND: DITHER_KIND, PCG64: HAS_BIGINT ? PCG64 : null,
     T_FROZEN: T_FROZEN, T_LATTICE_FROZEN: T_LATTICE_FROZEN, PERMS: PERMS, N_PERMUTATIONS: PERMS.length,
     fft2: fft2, ifft2: ifft2, fftInPlace: fftInPlace, computePerm: computePerm, quantDither: quantDither,
     makeRegions: makeRegions, analyze: analyze, scanPerm: scanPerm, permScore: permScore, decide: decide, blockGrid: blockGrid, gridSay: gridSay, weakSay: weakSay,
     geometry: geometry, stretchToU8: stretchToU8, shiftedLog: shiftedLog, autocorr: autocorr,
-    Coh: Coh, CH_ALL: CH_ALL, gaussBlur: gaussBlur, blur13: blur13, roundHalfEven: roundHalfEven, smoothSize: smoothSize
+    Coh: Coh, cohCompare: cohCompare, GRID_STRICT: GRID_STRICT, CH_ALL: CH_ALL, gaussBlur: gaussBlur, blur13: blur13, roundHalfEven: roundHalfEven, smoothSize: smoothSize
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.HPMeter = api;
