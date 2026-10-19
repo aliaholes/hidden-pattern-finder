@@ -107,6 +107,13 @@ h1,h2,h3,p{margin:0}
 .mtable th,.mtable td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a1414}
 .mtable th{color:var(--ash);font-weight:500}
 .scroll{overflow-x:auto}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:12px}
+.pair figure{margin:0}.pair canvas{width:100%;height:auto;display:block;background:#000;image-rendering:pixelated}
+.pair figcaption{font-size:12px;color:var(--ash);margin-top:6px}
+.facts{list-style:none;margin:10px 0 0;padding:0;font-size:13px}.facts li{padding:6px 0;border-bottom:1px solid #2a1414;overflow-wrap:anywhere}
+.facts li.strong{color:var(--white)}.facts li.strong::before{content:"AI ";color:var(--signal);font-weight:700}
+.drop.ctl{min-height:120px;margin-top:12px}
+.bits{font:400 12px/1.4 var(--mono);color:var(--ash);overflow-wrap:anywhere}
 .cohpic{margin-top:12px;max-width:min(100%,720px);display:block;background:#000}
 .list{font-size:13px;color:var(--ash);margin-top:8px;max-height:160px;overflow:auto}
 
@@ -150,6 +157,9 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
 @media (min-width:1200px){ .grid{grid-template-columns:repeat(6,minmax(0,1fr))} }
 @media (prefers-reduced-motion:reduce){ *,*::before,*::after{transition:none!important;animation:none!important} }
 [hidden]{display:none!important}
+/* tabs (port, Oct 17 2026): One/Many results only outside the Fingerprint tab, its output only inside it */
+body.fpmode #facts,body.fpmode #verdict,body.fpmode #results,body.fpmode #multi,body.fpmode #src{display:none!important}
+body:not(.fpmode) #fpOut{display:none!important}
 </style>
 </head>
 <body>
@@ -167,6 +177,7 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-one" aria-selected="true" aria-controls="one">One image</button>
       <button type="button" role="tab" id="tab-many" aria-selected="false" aria-controls="many">Many images</button>
+      <button type="button" role="tab" id="tab-fp" aria-selected="false" aria-controls="fp">Fingerprint</button>
     </div>
 
     <div id="one" role="tabpanel" aria-labelledby="tab-one">
@@ -193,14 +204,64 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
         <input type="file" id="file2" accept="image/*" multiple>
         <span class="big">Drop a set</span>
         <!-- DRAFT COPY -->
-        <span class="small">Many pictures from ONE source, all the same size (same model, same camera). This is the real watermark test: a fixed mark lines up across pictures, content doesn't. You need at least ~20; 50 to 100 is better. Never resized.</span>
+        <span class="small">Many pictures from ONE source, all the same size (same model, same camera). This is the test that can see a mark that is the same in every picture: a fixed mark lines up across pictures, content doesn't. You need at least ~20; 50 to 100 is better. Never resized. Up to about 4.5 megapixels each (1536 x 2816 fits).</span>
       </label>
-      <div class="opts"><button type="button" class="btn go" id="runMany" disabled>Run the set</button><span id="manyInfo"></span></div>
+      <label class="drop ctl" id="drop3">
+        <input type="file" id="file3" accept="image/*" multiple>
+        <span class="big" style="font-size:clamp(22px,5vw,36px)">Control set (optional)</span>
+        <!-- DRAFT COPY -->
+        <span class="small">Pictures of the SAME size from a different source (a camera, another model), ideally the same file format. With a control, only frequencies that line up in the set AND differ from the control count as the set's own: that rules out what both sources share (JPEG seams, if both are JPEG; a shared resize). A small control can only test strong frequencies, and the answer says when it was too small.</span>
+      </label>
+      <div class="opts"><button type="button" class="btn go" id="runMany" disabled>Run the set</button><span id="manyInfo"></span><span id="ctlInfo"></span><button type="button" class="btn" id="clearCtl" hidden>Clear control</button></div>
+    </div>
+
+    <div id="fp" role="tabpanel" aria-labelledby="tab-fp" hidden>
+      <label class="drop" id="fpDropA">
+        <input type="file" id="fpFileA" accept="image/*" multiple>
+        <span class="big">Drop a set</span>
+        <span class="small">Many pictures from one source (one model, one camera): files or a whole folder. Any sizes: each is cut to its centre 512 x 512 px, never resized. Pictures under 512 px, or over 40 megapixels, are skipped. 200+ is fine.</span>
+      </label>
+      <div class="opts"><label class="btn" style="display:inline-flex;align-items:center">Pick a folder<input type="file" id="fpDirA" webkitdirectory multiple hidden></label><span id="fpInfoA"></span></div>
+      <label class="drop ctl" id="fpDropB">
+        <input type="file" id="fpFileB" accept="image/*" multiple>
+        <span class="big" style="font-size:clamp(22px,5vw,36px)">Control set (optional)</span>
+        <span class="small">Pictures from a different source, ideally the same format (PNG vs PNG, same JPEG quality) and similar content. You get a difference view next to the two fingerprints.</span>
+      </label>
+      <div class="opts"><label class="btn" style="display:inline-flex;align-items:center">Pick a folder<input type="file" id="fpDirB" webkitdirectory multiple hidden></label><span id="fpInfoB"></span><button type="button" class="btn" id="fpClearB" hidden>Clear control</button></div>
+      <div class="opts"><button type="button" class="btn go" id="fpRun" disabled>Make the fingerprint</button></div>
     </div>
 
     <p class="status" id="status" aria-live="polite"></p>
     <div class="bar" id="bar" hidden><i></i></div>
     <div class="src" id="src" hidden><canvas id="srcCanvas"></canvas><p id="srcInfo"></p></div>
+  </section>
+
+  <section class="panel" id="fpOut" hidden>
+    <h2 style="margin:0">Fingerprint</h2>
+    <p class="legend" style="margin-top:6px" id="fpSummary"></p>
+    <div class="pair" id="fpViews"></div>
+    <div class="pair">
+      <figure><canvas id="fpRadial" width="560" height="300" style="width:100%;background:#000"></canvas><figcaption class="legend">Radial profile: mean log power at each distance from the centre (low to high frequency). Bumps = energy at a preferred scale.</figcaption></figure>
+      <figure><canvas id="fpAzim" width="560" height="300" style="width:100%;background:#000"></canvas><figcaption class="legend">Azimuthal profile: mean log power by direction (outer band, 1/8 to 1/2 of the spectrum). Spikes = stripes at a preferred angle (0 = vertical stripes).</figcaption></figure>
+    </div>
+    <div class="scroll"><table class="mtable" id="fpPeaks"></table></div>
+    <h3 style="margin-top:18px">What am I looking at?</h3>
+    <ul class="facts" style="font-size:13px;line-height:1.5">
+      <li><b>A fingerprint</b> is the average spectrum of many pictures' fine noise (each picture minus a blurred copy). Content averages out; whatever the camera or generator adds the same way every time stays. Upsamplers and image decoders often leave a lattice of dots, as Corvi et al. (2023) showed for diffusion models.</li>
+      <li><b>How it's computed:</b> green channel, centre 512 x 512 crop (offset aligned to 8 px, no resizing), residual = crop minus a Gaussian blur (sigma 1.5 px, applied exactly in the frequency domain), 2-D FFT, power averaged over the set, shown as log power. The bright cross through the centre is the picture edges and normal horizontal/vertical structure, not a mark.</li>
+      <li><b>Confounds.</b> Content (the same scene or style in every picture shows up too), format (JPEG adds an 8 px grid, PNG doesn't), resizing (moves or erases peaks), and re-encoding: social sites recompress and resize, which usually wipes these traces. Compare like with like: same format, size and kind of content.</li>
+      <li><b>Suggestive, not proof.</b> A different-looking fingerprint means the pictures were made differently. It doesn't say by what, and it isn't a watermark reading.</li>
+    </ul>
+  </section>
+
+  <section class="panel" id="facts" hidden>
+    <h2 style="margin:0">What the file says</h2>
+    <!-- DRAFT COPY -->
+    <p class="legend" style="margin-top:6px">Read on this device from the file's own bytes: C2PA / Content Credentials, XMP, PNG text, EXIF. Signatures are not checked, and metadata is easy to strip or fake: if it's missing, that means nothing.</p>
+    <ul class="facts" id="metaList"></ul>
+    <h2 style="margin:18px 0 0">Open watermark reader (DWT-DCT)</h2>
+    <p class="legend" style="margin-top:6px">The invisible-watermark library's dwtDct mark, which Stable Diffusion's reference scripts and SDXL embed. Read from the file's full-size pixels (pictures up to 40 megapixels). It's fragile: a resize, crop or strong JPEG erases it.</p>
+    <ul class="facts" id="wmList"></ul>
   </section>
 
   <section class="verdict black" id="verdict" hidden aria-live="polite">
@@ -242,8 +303,17 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
       <div class="scroll"><table class="mtable" id="mTable"></table></div>
       <p class="legend" style="margin-top:14px">The set's spectrum, centre = zero frequency. Brightness = how well the phases agree across the pictures.</p>
       <canvas class="cohpic" id="cohPic"></canvas>
-      <div class="legend"><span style="color:var(--signal)"><b></b>anchored (lines up across the set, off the grid)</span><span style="color:var(--steel)"><b></b>on the 8/16 px grid (blind band, never counted)</span><span style="color:var(--gold)"><b></b>survives the shift test (chance)</span></div>
+      <div class="legend"><span style="color:var(--signal)"><b></b>anchored (lines up across the set, off the grid)</span><span style="color:var(--steel)"><b></b>on the 8/16 px grid (counted only past a 100x stricter test, listed separately)</span><span style="color:var(--gold)"><b></b>survives the shift test (chance)</span></div>
+      <div class="scroll"><table class="mtable" id="mCmp"></table></div>
       <div class="scroll"><table class="mtable" id="mBins"></table></div>
+      <div class="scroll"><table class="mtable" id="mGrid"></table></div>
+      <h2 style="margin:22px 0 0">The pattern, made visible</h2>
+      <!-- DRAFT COPY -->
+      <p class="legend" id="patNote" style="margin-top:6px"></p>
+      <div class="pair">
+        <figure><canvas id="patMean"></canvas><figcaption>The set's fine grain (each picture minus a blurred copy), averaged over every picture. A fixed mark adds up; content averages away.</figcaption></figure>
+        <figure><canvas id="patRec"></canvas><figcaption>The same average, keeping only the frequencies that were counted above. Both are shrunk for the screen and contrast-stretched.</figcaption></figure>
+      </div>
     </div>
   </section>
 
@@ -265,7 +335,8 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
       <ul>
         <li>Stripes lined up exactly with the picture's edges. That's on purpose, so JPEG blocks and resizing never cry wolf.</li>
         <li>A mark that changes with every picture, or isn't periodic at all. One picture can only show a pattern that repeats inside it.</li>
-        <li>A watermark like SynthID doesn't repeat inside one picture. It lines up ACROSS pictures. That's what Many images tests: it found Google's mark in their images, and it's blind to marks hidden on the 8 / 16 px grid or keyed per picture.</li>
+        <li>A watermark like SynthID doesn't repeat inside one picture. It lines up ACROSS pictures. That's what Many images tests. It can't see marks keyed to each picture or adapted to the content, and on the 8 / 16 px grid it only counts what passes a much stricter test.</li>
+        <li>Lining up is not proof of a watermark. Anything fixed in image coordinates lines up too: a decoder's or upscaler's fingerprint, a border, a vignette. Use a control set from another source to rule those out.</li>
       </ul>
       <p class="q">A found pattern is a fingerprint of how a picture was made (a camera, an upscaler, a decoder). It's not proof of hidden data.</p>
     </section>
@@ -292,7 +363,10 @@ dialog::backdrop{background:rgba(7,5,5,.88)}
 </dialog>
 
 <script src="meter.js"></script>
+<script src="meta.js"></script>
 <script src="decode.js"></script>
 <script src="app.js"></script>
+<script src="spectrum.js"></script>
+<script src="fpui.js"></script>
 </body>
 </html>
