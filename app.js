@@ -15,10 +15,15 @@
   function tab(which) {
     $('tab-one').setAttribute('aria-selected', which === 'one');
     $('tab-many').setAttribute('aria-selected', which === 'many');
-    $('one').hidden = which !== 'one'; $('many').hidden = which !== 'many';
+    $('tab-fp').setAttribute('aria-selected', which === 'fp');
+    $('one').hidden = which !== 'one'; $('many').hidden = which !== 'many'; $('fp').hidden = which !== 'fp';
+    // the CSS shows the One/Many result panels only outside the Fingerprint tab and #fpOut only inside it; nothing's
+    // own hidden flag is touched, so results come back as they were when you switch back (port, Oct 17 2026)
+    document.body.classList.toggle('fpmode', which === 'fp');
   }
   $('tab-one').onclick = function () { tab('one'); };
   $('tab-many').onclick = function () { tab('many'); };
+  $('tab-fp').onclick = function () { tab('fp'); };
 
   function status(msg, isErr) { var s = $('status'); s.textContent = msg; s.className = 'status' + (isErr ? ' err' : ''); }
   function progress(f) { var b = $('bar'); b.hidden = f == null; if (f != null) b.firstChild.style.width = Math.round(f * 100) + '%'; }
@@ -52,7 +57,7 @@
   function decode(file) {
     return file.arrayBuffer().then(function (ab) {
       var bytes = new Uint8Array(ab), info = D.sniff(bytes), notes = [];
-      var base = { name: file.name, bytes: file.size, notes: notes, kind: info.type };
+      var base = { name: file.name, bytes: file.size, notes: notes, kind: info.type, fileBytes: bytes };
       if (info.type === 'png') {
         return D.decodePNG(bytes).then(function (r) {
           if (r.translucent) notes.push('This PNG has transparency (' + r.translucent.toLocaleString() + ' px). Like the command-line scanner, the finder reads the colour stored under it; it does not paint it onto a background.');
@@ -159,9 +164,10 @@
   function idle() { for (var i = 0; i < pool.length; i++) if (!pool[i].busy) return pool[i]; return pool[0]; }
 
   // ------------------------------------------------------------------ ONE IMAGE
+  var WM_MAX_PX = 40000000; // the DWT-DCT reader's full-size copy: 40 MP = 120 MB (port, Oct 17 2026)
   function runOne(file) {
     var my = ++runId, cap = +$('cap').value;
-    $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('extrasWrap').hidden = true;
+    $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('extrasWrap').hidden = true; $('facts').hidden = true;
     $('grid').innerHTML = ''; $('extras').innerHTML = '';
     state = { perms: {}, view: state.view, extras: {}, img: null, verdict: null, decodePath: null };
     delete $('verdict').dataset.json;
@@ -175,8 +181,14 @@
       var rd = img.reduced, dropped = rd ? rd.dropped_px.right + rd.dropped_px.bottom : 0;
       $('srcInfo').textContent = raw.name + ' - ' + raw.W + ' x ' + raw.H + ' px' + (rd ? ' (analysed at ' + sizeWord(rd.k) + ' size, ' + img.W + ' x ' + img.H + ': every ' + rd.k + ' x ' + rd.k + ' block of pixels averaged into one' + (dropped ? ', after trimming ' + (rd.dropped_px.right ? rd.dropped_px.right + ' px off the right' : '') + (rd.dropped_px.right && rd.dropped_px.bottom ? ' and ' : '') + (rd.dropped_px.bottom ? rd.dropped_px.bottom + ' px off the bottom' : '') + ' so the blocks fit' : '') + '. Periods are in those smaller pixels: multiply them by ' + rd.k + ' for the original.)' : ' (analysed at full size)') + (raw.notes.length ? ' ' + raw.notes.join(' ') : '');
       state.decodePath = raw.path;
+      showFacts(raw, my);
       makePool(NW);
-      return Promise.all(pool.map(function (s) { return send(s, { cmd: 'init', rgb: img.rgb.buffer.slice(0), H: img.H, W: img.W }); }));
+      return Promise.all(pool.map(function (s) { return send(s, { cmd: 'init', rgb: img.rgb.buffer.slice(0), H: img.H, W: img.W }); })).then(function () {
+        // the DWT-DCT reader needs the file's own pixels, not the analysis-size copy: one more full-size copy (3 bytes
+        // per pixel), so it runs only up to WM_MAX_PX
+        if (raw.W * raw.H > WM_MAX_PX) { setList($('wmList'), [{ what: 'Not read: this picture is ' + (raw.W * raw.H / 1e6).toFixed(1) + ' megapixels, and the reader runs on pictures up to ' + (WM_MAX_PX / 1e6) + ' megapixels here (it needs its own full-size copy). The mark is fragile anyway: a picture this big has usually not been through a generator untouched.' }]); return; }
+        queue({ cmd: 'wm', rgb: raw.rgb.buffer.slice(0), H: raw.H, W: raw.W }).then(function (r) { if (my === runId) showWm(r.wm); }, function (e) { if (my === runId) setList($('wmList'), [{ what: 'Could not read: ' + e.message }]); });
+      });
     }).then(function () {
       if (my !== runId || !state.img) return;
       $('results').hidden = false;
@@ -281,6 +293,45 @@
     runExtras();
   }
 
+  // ------------------------------------------------------------------ what the file says (meta.js) + the DWT-DCT reader (wmdecode.js)
+  function setList(ul, items) {
+    ul.innerHTML = '';
+    items.forEach(function (it) { var li = document.createElement('li'); if (it.strong) li.className = 'strong'; li.textContent = it.what; if (it.sub) { var d = document.createElement('div'); d.className = 'bits'; d.textContent = it.sub; li.appendChild(d); } ul.appendChild(li); });
+  }
+  function showFacts(raw, my) {
+    // the metadata reader must never stop the pattern analysis: a throw, a rejection or a missing meta.js only shows
+    // up in this panel (port, Oct 17 2026)
+    var bytes = raw.fileBytes; delete raw.fileBytes; // the analysis copy must not keep the whole file alive
+    $('facts').hidden = false;
+    setList($('metaList'), [{ what: 'Reading...' }]); setList($('wmList'), [{ what: 'Reading...' }]);
+    var fail = function (e) { if (my === runId) setList($('metaList'), [{ what: 'Could not read the metadata: ' + (e && e.message || e) }]); };
+    try {
+      if (!window.HPMeta) throw new Error('the metadata reader (meta.js) did not load');
+      window.HPMeta.read(bytes).then(function (m) {
+        if (my !== runId) return;
+        var items = m.flags.slice();
+        if (m.c2pa && m.c2pa.is_c2pa && m.c2pa.actions.length) items.push({ what: 'C2PA actions: ' + m.c2pa.actions.join(', ') });
+        if (m.xmp) ['xmp:CreatorTool', 'tiff:Software', 'photoshop:Credit'].forEach(function (k) { if (m.xmp[k]) items.push({ what: 'XMP ' + k + ' = ' + m.xmp[k] }); });
+        if (m.exif) ['Make', 'Model', 'Artist'].forEach(function (k) { if (m.exif[k]) items.push({ what: 'EXIF ' + k + ' = ' + m.exif[k] }); });
+        (m.text || []).forEach(function (t) { if (!m.flags.some(function (f) { return f.what.indexOf('"' + t.key + '"') >= 0; })) items.push({ what: 'PNG text "' + t.key + '" = ' + t.value.slice(0, 160) + (t.value.length > 160 ? '...' : '') + (t.cut ? ' (only the first 1 MB was unpacked)' : '') }); });
+        if (m.error) items.push({ what: 'The file\'s structure could not be read to the end (' + m.error + '); what is listed came before that point.' });
+        if (!items.length) items.push({ what: 'Nothing: no C2PA, no AI source type, no generator text, no EXIF software (' + m.format.toUpperCase() + '). That proves nothing either way.' });
+        else if (!m.ai_declared) items.push({ what: 'Nothing here declares the picture AI-made (no trained-model source type, no generator settings).' });
+        setList($('metaList'), items);
+      }).catch(fail);
+    } catch (e) { fail(e); }
+  }
+  function showWm(w) {
+    if (w.error) { setList($('wmList'), [{ what: w.error }]); return; }
+    var items = w.known.map(function (k) {
+      var hit = k.p < 1e-6;
+      return { strong: hit, what: (hit ? 'FOUND: ' : '') + k.name + ': ' + k.match + ' of ' + k.L + ' bits match (chance of that many by luck: ' + (k.p < 1e-12 ? '< 1e-12' : k.p.toPrecision(2)) + ')',
+        sub: 'read ' + (k.text != null ? '"' + k.text + '" = ' : '') + '0x' + k.hex + ', ' + k.blocks_per_bit.toFixed(1) + ' blocks per bit' };
+    });
+    items.push({ what: w.verdict === 'NO-MATCH' ? 'No known DWT-DCT payload. Expected on most pictures: the mark is fragile, and most generators don\'t use it.' : 'A known open watermark is in this picture.' });
+    setList($('wmList'), items);
+  }
+
   var EXTRAS = [['gamma25', 'Darks lifted (gamma 0.25)'], ['gamma50', 'Darks lifted (gamma 0.5)'], ['sat999', 'Saturation x999'],
     ['levels', 'Auto levels (colour)'], ['equalize', 'Equalized (colour)'], ['chroma', 'Chroma residual x24'], ['residual', 'Fine-grain residual x12']];
   function runExtras() {
@@ -350,39 +401,52 @@
     $('manyInfo').textContent = manyFiles.length ? manyFiles.length + ' pictures chosen' : '';
     $('runMany').disabled = manyFiles.length < 2;
   }
-  $('runMany').onclick = function () { runMany(manyFiles); };
-  function runMany(files) {
+  var ctlFiles = [];
+  function setCtl(files) {
+    ctlFiles = Array.prototype.filter.call(files, function (f) { return /^image\//.test(f.type) || /\.(png|jpe?g|webp)$/i.test(f.name); })
+      .sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+    $('ctlInfo').textContent = ctlFiles.length ? ctlFiles.length + ' control pictures' : '';
+    $('clearCtl').hidden = !ctlFiles.length;
+  }
+  $('clearCtl').onclick = function () { setCtl([]); };
+  $('runMany').onclick = function () { runMany(manyFiles, ctlFiles); };
+  // 1536 x 2816 (4.33 MP) fits (Oct 17 2026; was 2.4 MP). Worker memory at the limit, estimated: the set's sums about
+  // 330 MB (float32), a control's about 110 MB (lite: phases only), one picture in flight about 430 MB: under 1 GB.
+  var MANY_MAX_PX = 4500000;
+  function runMany(files, ctl) {
+    ctl = ctl || [];
     var my = ++runId;
-    $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('src').hidden = true;
+    $('verdict').hidden = true; $('results').hidden = true; $('multi').hidden = true; $('src').hidden = true; $('facts').hidden = true;
     delete $('verdict').dataset.json;
     makePool(1);
     var w = pool[0], H = null, W = null, sizes = {}, k = 0, notes = {};
     status('Checking sizes...'); progress(0);
     // pass 1: sizes (never resized; mixed sizes are refused, like the Python)
     var chain = Promise.resolve();
-    files.forEach(function (f) {
+    files.concat(ctl).forEach(function (f) {
       // the STORED size (EXIF orientation ignored, like the Python and like decode()): a rotated phone JPEG must not
       // count as W x H here and arrive as H x W later (that garbled the set before Oct 14 2026)
       chain = chain.then(function () { return sizeOf(f).then(function (z) { var key = z.W + ' x ' + z.H; (sizes[key] = sizes[key] || []).push(f.name); }); });
     });
     chain.then(function () {
       var keys = Object.keys(sizes);
-      if (keys.length > 1) throw new Error('These are not all one size, and this test never resizes: ' + keys.map(function (s) { return s + ' (' + sizes[s].length + ')'; }).join(', ') + '. Pick one size.');
+      if (keys.length > 1) throw new Error('These are not all one size' + (ctl.length ? ' (set and control together)' : '') + ', and this test never resizes: ' + keys.map(function (s) { return s + ' (' + sizes[s].length + ')'; }).join(', ') + '. Pick one size.');
       var wh = keys[0].split(' x '); W = +wh[0]; H = +wh[1];
       if (Math.min(W, H) < 64) throw new Error('Too small: ' + keys[0] + '.');
-      if (W * H > 2400000) throw new Error(keys[0] + ' is too big for the in-browser set test (the limit is about 2.4 megapixels, e.g. 1536 x 1536).');
-      return send(w, { cmd: 'coh-start', H: H, W: W });
+      if (W * H > MANY_MAX_PX) throw new Error(keys[0] + ' is too big for the in-browser set test (the limit is about 4.5 megapixels, e.g. 1536 x 2816).');
+      return send(w, { cmd: 'coh-start', which: 'set', H: H, W: W }).then(function () { if (ctl.length) return send(w, { cmd: 'coh-start', which: 'control', H: H, W: W }); });
     }).then(function () {
-      var t0 = performance.now(), feed = Promise.resolve();
-      files.forEach(function (f, i) {
+      var t0 = performance.now(), feed = Promise.resolve(), all = files.map(function (f) { return [f, 'set']; }).concat(ctl.map(function (f) { return [f, 'control']; }));
+      all.forEach(function (fw, i) {
+        var f = fw[0];
         feed = feed.then(function () {
           if (my !== runId) throw new Error('cancelled');
           return decode(f).then(function (img) {
             if (img.W !== W || img.H !== H) throw new Error(f.name + ' decoded as ' + img.W + ' x ' + img.H + ', not ' + W + ' x ' + H + ' like the rest of the set. Nothing was computed from a mismatched picture; take it out and run again.');
             if (img.notes.length) notes[img.notes.join(' ')] = (notes[img.notes.join(' ')] || 0) + 1;
-            return send(w, { cmd: 'coh-feed', rgb: img.rgb.buffer, W: img.W, H: img.H }, [img.rgb.buffer]);
+            return send(w, { cmd: 'coh-feed', which: fw[1], rgb: img.rgb.buffer, W: img.W, H: img.H }, [img.rgb.buffer]);
           })
-            .then(function () { k++; progress(k / files.length); status('Lining up phases: ' + k + ' / ' + files.length + ' (' + ((performance.now() - t0) / 1000).toFixed(0) + ' s)'); });
+            .then(function () { k++; progress(k / all.length); status('Lining up phases: ' + k + ' / ' + all.length + (ctl.length ? ' (set + control)' : '') + ' (' + ((performance.now() - t0) / 1000).toFixed(0) + ' s)'); });
         });
       });
       return feed.then(function () { return send(w, { cmd: 'coh-eval' }); }).then(function (r) { showMany(r, (performance.now() - t0) / 1000, notes); });
@@ -393,19 +457,45 @@
     box.className = 'verdict ' + (anch ? 'red' : 'black'); box.hidden = false;
     $('vKick').textContent = 'The answer (' + ev.N + ' pictures, ' + ev.W + ' x ' + ev.H + ')';
     // DRAFT COPY (every sentence below)
-    var word, say;
+    var word, say, cmT = r.cmp ? r.cmp.n_set_only + r.cmp.n_set_only_grid + r.cmp.n_same + r.cmp.n_undecided + r.cmp.n_untestable : 0;
+    // the control branch runs when the control can test something: it is big enough, or (rarely) it flagged a frequency
+    // anyway because the control lines up there with a DIFFERENT phase
+    var ctlUsed = !!(r.cmp && cmT > 0 && (!r.cmp.underpowered || r.cmp.n_set_only + r.cmp.n_set_only_grid > 0));
     if (ev.underpowered) { word = 'Not enough pictures'; say = 'With ' + ev.N + ' pictures no frequency can pass the test (it needs agreement above ' + ev.cstar.toFixed(3) + ', which is impossible). Use at least ' + ev.n_min + ' pictures of this size. This is NOT a clean result.'; }
-    else if (anch) { word = ev.n_anch + ' fixed signal' + (ev.n_anch === 1 ? '' : 's') + ' line up'; say = ev.n_anch + ' frequencies have the same phase in picture after picture: something is fixed in image coordinates across this set. A watermark does this (Google\'s SynthID showed 24 to 27 such frequencies in 98 Gemini images). So does any shared content: a fixed scene, a border, a vignette, a decoder fingerprint. Only a test against matched pictures from another source can tell those apart.'; }
-    else if (ev.n_grid > 0) { word = 'Nothing off the grid'; say = 'No fixed signal lines up off the 8 / 16 px grid, at this number of pictures (it can see agreement above ' + ev.cstar.toFixed(3) + '). Some frequencies ON the grid line up, which is what decoders and JPEG seams do, and a mark hidden there would be invisible to this test. Not "clean": a mark keyed to each picture would not show here either.'; }
+    else if (ctlUsed) {
+      // the control can test something: every anchored set frequency is set-only, the same in the control (the control
+      // itself lines up there), undecided (strong enough, but the control does not line up there and the test could not
+      // tell), or too faint for THIS control to tell (cohCompare's power rule). A small or noisy control never reads as
+      // "nothing beyond the control" (fix, Oct 17 2026: undecided ones used to be counted as "same").
+      var cm = r.cmp, nso = cm.n_set_only + cm.n_set_only_grid;
+      box.className = 'verdict ' + (nso ? 'red' : 'black');
+      var faint = !cm.n_untestable ? '' : cm.underpowered ? ' ' + cm.n_untestable + ' more line up in the set, but ' + cm.Nb + ' control pictures are too few to test them' + (cm.nb_min ? ' (use at least ' + cm.nb_min + ')' : '') + '.' :
+        ' ' + cm.n_untestable + ' more line up in the set but are too faint for ' + cm.Nb + ' control pictures to tell apart (that needs agreement above ' + cm.cstar_ctl.toFixed(3) + ' off the grid; more control pictures lower it).';
+      if (cm.n_undecided) faint += ' ' + cm.n_undecided + ' more line up in the set and are strong enough to test, but the control does not line up there and the test could not tell them apart from it: undecided, so more control pictures are needed.';
+      if (nso) { word = nso + ' signal' + (nso === 1 ? '' : 's') + ' only in this set'; say = cm.n_set_only + ' off-grid and ' + cm.n_set_only_grid + ' grid frequencies line up across this set AND differ from the ' + cm.Nb + ' control pictures (two-sample test, alpha 0.01 over ' + cm.tests.toLocaleString() + ' tests; grid ones 100x stricter). Something fixed in image coordinates is in this set and not in the control. A watermark does that; so does a fingerprint that only this source has (its decoder, its upscaler). It is not, by itself, proof of a watermark.' + faint; }
+      else if (cm.n_same && !cm.n_undecided) { word = 'Nothing beyond the control'; say = cm.n_same + ' frequencies line up in this set and were strong enough to test, and the ' + cm.Nb + ' control pictures line up in a similar way there too, so they are something both sources share.' + faint + ' Not "clean": a mark keyed to each picture, or one that adapts to the content, would not show here.'; }
+      else { word = 'Control too small to tell'; say = (cm.n_untestable + cm.n_undecided) + ' frequencies line up in this set, but ' + cm.Nb + ' control pictures cannot tell them apart from the control' +
+        (cm.n_untestable ? ': ' + cm.n_untestable + ' are too faint (that needs agreement above ' + cm.cstar_ctl.toFixed(3) + ' off the grid, ' + cm.cstar_ctl_grid.toFixed(3) + ' on it)' : '') +
+        (cm.n_undecided ? (cm.n_untestable ? ', and ' : ': ') + cm.n_undecided + ' are strong enough to test, but the control does not line up there and the test could not tell either way' : '') +
+        (cm.n_same ? '. (' + cm.n_same + ' more line up in the control in a similar way, so those are something both sources share.)' : '.') +
+        ' This is NOT "nothing beyond the control": add control pictures and run again.'; }
+    }
+    else if (anch) { word = ev.n_anch + ' fixed signal' + (ev.n_anch === 1 ? '' : 's') + ' line up'; say = ev.n_anch + ' frequencies have the same phase in picture after picture: something is fixed in image coordinates across this set. A watermark does this. So does any shared content: a fixed scene, a border, a vignette, a decoder fingerprint. Add a control set from another source (same size) to tell those apart.'; }
+    else if (ev.n_grid_strict > 0) { word = ev.n_grid_strict + ' on the grid'; say = 'Nothing lines up off the 8 / 16 px grid, but ' + ev.n_grid_strict + ' grid frequencies pass the stricter test (agreement above ' + ev.cstar_grid.toFixed(3) + ', 100x stricter than off the grid). Block-based marks (like the open DWT-DCT watermark) live there, and so do JPEG seams and decoders: add a control set of the same size to tell them apart.'; }
+    else if (ev.n_grid > 0) { word = 'Nothing off the grid'; say = 'No fixed signal lines up off the 8 / 16 px grid, at this number of pictures (it can see agreement above ' + ev.cstar.toFixed(3) + '). Some frequencies ON the grid line up a little, which is what decoders and JPEG seams do, but none passes the stricter grid test (' + ev.cstar_grid.toFixed(3) + '). Not "clean": a mark keyed to each picture would not show here either.'; }
     else { word = 'Nothing lines up'; say = 'No fixed signal lines up across these pictures, at this number of pictures (it can see agreement above ' + ev.cstar.toFixed(3) + '). Not "clean": a mark keyed to each picture, or one that adapts to the content, would not show here.'; }
+    if (r.cmp && r.cmp.underpowered && !ctlUsed) say += ' A control of ' + r.cmp.Nb + ' pictures was given, but it is too small to test against: no frequency could ever pass (that would need agreement above ' + r.cmp.cstar_ctl.toFixed(3) + ', which is impossible)' + (r.cmp.nb_min ? '. Use at least ' + r.cmp.nb_min + ' control pictures with this set' : '') + '. So the words above are the set on its own.';
+    else if (r.cmp && !cmT) say += ' (The ' + r.cmp.Nb + ' control pictures were not needed: nothing in the set lines up to compare.)';
     if (dv.warn) say += ' WARNING: these pictures share most of their content (similarity ' + dv.rho_res.toFixed(2) + ' / ' + dv.rho_raw.toFixed(2) + '), so anything that lines up could just be that content.';
     var nk = Object.keys(notes || {});
     if (nk.length) say += ' ' + nk.map(function (t) { return '(' + notes[t] + ' picture' + (notes[t] === 1 ? '' : 's') + ') ' + t; }).join(' ');
     $('vWord').textContent = word; $('vSay').textContent = say; $('vGrid').hidden = true; $('vGrid').textContent = '';
-    $('verdict').dataset.json = JSON.stringify({ mode: 'many', verdict: ev.verdict, N: ev.N, W: ev.W, H: ev.H, n_anch: ev.n_anch, n_grid: ev.n_grid, n_shared: ev.n_shared,
-      n_grid_anchored: ev.n_grid_anchored, cstar: ev.cstar, tests: ev.tests, counts: ev.counts, rho_res: dv.rho_res, rho_raw: dv.rho_raw, warn: dv.warn,
+    $('verdict').dataset.json = JSON.stringify({ mode: 'many', verdict: ev.verdict, N: ev.N, W: ev.W, H: ev.H, n_anch: ev.n_anch, n_grid: ev.n_grid, n_grid_strict: ev.n_grid_strict, n_shared: ev.n_shared,
+      grid_strict_verdict: ev.grid_strict_verdict, cstar_grid: ev.cstar_grid,
+      control: r.cmp ? { N: r.cmp.Nb, n_set_only: r.cmp.n_set_only, n_set_only_grid: r.cmp.n_set_only_grid, n_same: r.cmp.n_same, n_undecided: r.cmp.n_undecided, n_untestable: r.cmp.n_untestable, cstar_ctl: r.cmp.cstar_ctl, underpowered: r.cmp.underpowered, nb_min: r.cmp.nb_min } : null,
+      n_grid_anchored: ev.n_grid_anchored, cstar: ev.cstar, tests: ev.tests, counts: ev.counts, counts_grid_strict: ev.counts_grid_strict, rho_res: dv.rho_res, rho_raw: dv.rho_raw, warn: dv.warn,
       top_bins: ev.bins.slice(0, 10), shift_kind: M.DITHER_KIND });
-    $('vNums').textContent = 'verdict ' + ev.verdict + ' | N ' + ev.N + ' | detection floor C* ' + ev.cstar.toFixed(4) + ' (Rayleigh, Bonferroni over ' + ev.tests.toLocaleString() + ' tests, alpha ' + ev.alpha + ') | grid-band shift-dead bins ' + ev.n_grid_anchored + ' (the blind band is ' + (100 * ev.grid_blind_fraction).toFixed(1) + '% of all bins) | shift-surviving ' + ev.n_shared + ' | content similarity ' + dv.rho_res.toFixed(3) + ' residual / ' + dv.rho_raw.toFixed(3) + ' raw (independent ~' + (dv.independent_expectation || 0).toFixed(3) + ') | ' + secs.toFixed(1) + ' s';
+    $('vNums').textContent = 'verdict ' + ev.verdict + ' | N ' + ev.N + ' | detection floor C* ' + ev.cstar.toFixed(4) + ' (Rayleigh, Bonferroni over ' + ev.tests.toLocaleString() + ' tests, alpha ' + ev.alpha + ') | grid-band shift-dead bins ' + ev.n_grid_anchored + ', past the strict grid floor ' + ev.cstar_grid.toFixed(4) + ': ' + ev.n_grid_strict + (r.cmp ? ' | control N ' + r.cmp.Nb + ', floor C*ctl ' + r.cmp.cstar_ctl.toFixed(4) + (r.cmp.underpowered ? ' (too small)' : '') + ', set-only ' + r.cmp.n_set_only + ' off-grid / ' + r.cmp.n_set_only_grid + ' grid, same ' + r.cmp.n_same + ', too faint to tell ' + r.cmp.n_untestable : '') + ' (the grid band is ' + (100 * ev.grid_blind_fraction).toFixed(1) + '% of all bins) | shift-surviving ' + ev.n_shared + ' | content similarity ' + dv.rho_res.toFixed(3) + ' residual / ' + dv.rho_raw.toFixed(3) + ' raw (independent ~' + (dv.independent_expectation || 0).toFixed(3) + ') | ' + secs.toFixed(1) + ' s';
     $('multi').hidden = false;
     var t = '<tr><th>channel</th><th>anchored off-grid</th><th>on the grid</th><th>grid, shift-dead</th><th>shift-surviving</th></tr>';
     Object.keys(ev.counts).forEach(function (c) { var q = ev.counts[c]; t += '<tr><td>' + c + '</td><td>' + q.anchored_offgrid + '</td><td>' + q.grid + '</td><td>' + q.grid_anchored + '</td><td>' + q.shared_offgrid + '</td></tr>'; });
@@ -423,6 +513,24 @@
     var b = '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">Strongest anchored frequencies</caption><tr><th>channel</th><th>fy, fx (cycles / picture)</th><th>period px</th><th>angle</th><th>agreement C</th></tr>';
     ev.bins.slice(0, 20).forEach(function (q) { b += '<tr><td>' + q.ch + '</td><td>' + q.fy + ', ' + q.fx + '</td><td>' + q.period_px.toFixed(2) + '</td><td>' + q.angle_deg.toFixed(1) + '\u00b0</td><td>' + q.C.toFixed(3) + '</td></tr>'; });
     $('mBins').innerHTML = ev.bins.length ? b : '';
+    var gt = '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">On the 8 / 16 px grid, past the stricter floor ' + ev.cstar_grid.toFixed(3) + '</caption><tr><th>channel</th><th>fy, fx (cycles / picture)</th><th>period px</th><th>angle</th><th>agreement C</th></tr>';
+    ev.grid_bins.slice(0, 20).forEach(function (q) { gt += '<tr><td>' + q.ch + '</td><td>' + q.fy + ', ' + q.fx + '</td><td>' + q.period_px.toFixed(2) + '</td><td>' + q.angle_deg.toFixed(1) + '\u00b0</td><td>' + q.C.toFixed(3) + '</td></tr>'; });
+    $('mGrid').innerHTML = ev.grid_bins.length ? gt : '';
+    if (r.cmp) {
+      var ct = '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">Only in this set, not in the ' + r.cmp.Nb + ' control pictures</caption><tr><th>channel</th><th>fy, fx</th><th>period px</th><th>angle</th><th>C set</th><th>C control</th><th>grid?</th></tr>';
+      r.cmp.bins.slice(0, 15).map(function (q) { q.g = 'no'; return q; }).concat(r.cmp.grid_bins.slice(0, 10).map(function (q) { q.g = 'yes'; return q; })).forEach(function (q) { ct += '<tr><td>' + q.ch + '</td><td>' + q.fy + ', ' + q.fx + '</td><td>' + q.period_px.toFixed(2) + '</td><td>' + q.angle_deg.toFixed(1) + '\u00b0</td><td>' + q.C.toFixed(3) + '</td><td>' + q.C_control.toFixed(3) + '</td><td>' + q.g + '</td></tr>'; });
+      $('mCmp').innerHTML = (r.cmp.bins.length + r.cmp.grid_bins.length) ? ct : '<caption style="text-align:left;color:var(--ash);padding:10px 0 6px">' +
+        (r.cmp.underpowered ? 'The ' + r.cmp.Nb + ' control pictures are too few to test against' + (r.cmp.nb_min ? ' (at least ' + r.cmp.nb_min + ' are needed with this set)' : '') + ', so this says nothing either way.' :
+          'Against ' + r.cmp.Nb + ' control pictures: no frequency was found only in this set' + (r.cmp.n_untestable ? ' (' + r.cmp.n_untestable + ' were too faint for this control to test)' : '') + (r.cmp.n_undecided ? ' (' + r.cmp.n_undecided + ' were strong enough but undecided: the control does not line up there)' : '') + '.') + '</caption>';
+    } else $('mCmp').innerHTML = '';
+    var pt = r.pattern;
+    [['patMean', pt.mean], ['patRec', pt.rebuilt]].forEach(function (a) { putPack($(a[0]), a[1]); });
+    // what this says is what worker.js draws: both pictures shrunk to at most 512 px and at least 2x (area average), one contrast stretch
+    // each, grey = zero. No full-resolution copy and no numbers are shown (port, Oct 17 2026)
+    var shrunk = pt.shown_w < ev.W ? 'shrunk from ' + ev.W + ' x ' + ev.H + ' to ' + pt.shown_w + ' x ' + pt.shown_h + ' px for the screen, so repeats finer than about ' + (2 * ev.W / pt.shown_w).toFixed(1) + ' px blur away' : 'shown at ' + pt.shown_w + ' x ' + pt.shown_h + ' px';
+    $('patNote').textContent = (pt.empty ? 'No frequency was counted, so the rebuilt picture is flat grey; the averaged residual is shown as it is. ' :
+      'Rebuilt from ' + pt.n_bins + ' frequency bins' + (pt.from === 'control' ? ' that are only in this set (not in the control)' : ' (anchored off the grid, plus grid ones past the stricter test)') + '. ') +
+      'Both pictures are ' + shrunk + ', and each is contrast-stretched on its own scale (grey = zero). They are pictures to look at, not measurements: the page does not export them or their numbers, and nothing is taken out of any picture.';
     status('Done. ' + ev.N + ' pictures in ' + secs.toFixed(1) + ' s, all on this device.'); progress(null);
   }
 
@@ -435,6 +543,7 @@
   }
   wireDrop($('drop1'), $('file1'), function (fs) { runOne(fs[0]); });
   wireDrop($('drop2'), $('file2'), function (fs) { setMany(fs); });
+  wireDrop($('drop3'), $('file3'), function (fs) { setCtl(fs); });
   if (!window.HPDecode) status('The page did not load completely (decode.js is missing).', true);
   else if (!window.Worker || !window.createImageBitmap) status('This browser cannot run the finder (it needs Web Workers and createImageBitmap).', true);
 })();
